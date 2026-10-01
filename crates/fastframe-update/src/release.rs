@@ -25,6 +25,10 @@ pub(crate) const MANIFEST_LIMIT: u64 = 1024 * 1024;
 
 #[derive(Deserialize)]
 struct Latest {
+    #[serde(default)]
+    draft: bool,
+    #[serde(default)]
+    prerelease: bool,
     tag_name: String,
     html_url: String,
 }
@@ -68,6 +72,9 @@ pub(crate) fn newer(
         "The release listing is too large"
     );
     let latest: Latest = serde_json::from_slice(&body).context("Unexpected release listing")?;
+    if latest.draft || latest.prerelease {
+        return Ok(None);
+    }
     let version = latest.tag_name.trim_start_matches('v').to_owned();
     Ok(
         version::is_newer(&version, config.current_version).then_some(Release {
@@ -134,6 +141,7 @@ pub(crate) struct Metadata {
     draft: bool,
     #[serde(default)]
     prerelease: bool,
+    #[serde(default)]
     pub(crate) assets: Vec<Asset>,
 }
 
@@ -154,22 +162,36 @@ pub(crate) fn metadata(
     source: &Source,
     version: &str,
 ) -> Result<Metadata> {
-    let mut body = Vec::new();
-    fetch(
-        transport,
-        source,
-        config,
-        &source.release(config, version),
-        JSON,
-    )?
-    .take(MANIFEST_LIMIT + 1)
-    .read_to_end(&mut body)?;
-    ensure!(
-        body.len() as u64 <= MANIFEST_LIMIT,
-        "The release metadata is too large"
-    );
-    let metadata: Metadata =
-        serde_json::from_slice(&body).context("Unexpected release metadata")?;
+    // Feed lists already carry assets for each version. latest.json can
+    // describe the stable release while this client chose a prerelease.
+    let metadata: Metadata = if !source.is_github() && config.prerelease_channel() {
+        let url = source
+            .releases(config, 1, PER_PAGE)
+            .context("The feed has no release list")?;
+        let body = read_metadata(transport, source, config, &url, LIST_LIMIT)?;
+        let entries: Vec<Metadata> =
+            serde_json::from_slice(&body).context("Unexpected release list")?;
+        let mut matches = entries
+            .into_iter()
+            .filter(|entry| entry.tag_name == format!("v{version}"));
+        let selected = matches
+            .next()
+            .context("The release changed. Check for updates again.")?;
+        ensure!(
+            matches.next().is_none(),
+            "The release list has duplicate versions"
+        );
+        selected
+    } else {
+        let body = read_metadata(
+            transport,
+            source,
+            config,
+            &source.release(config, version),
+            MANIFEST_LIMIT,
+        )?;
+        serde_json::from_slice(&body).context("Unexpected release metadata")?
+    };
     ensure!(
         !metadata.draft
             && (!metadata.prerelease || config.prerelease_channel())
@@ -177,6 +199,24 @@ pub(crate) fn metadata(
         "The release changed. Check for updates again."
     );
     Ok(metadata)
+}
+
+fn read_metadata(
+    transport: &dyn Transport,
+    source: &Source,
+    config: &UpdateConfig,
+    url: &str,
+    limit: u64,
+) -> Result<Vec<u8>> {
+    let mut body = Vec::new();
+    fetch(transport, source, config, url, JSON)?
+        .take(limit + 1)
+        .read_to_end(&mut body)?;
+    ensure!(
+        body.len() as u64 <= limit,
+        "The release metadata is too large"
+    );
+    Ok(body)
 }
 
 impl Metadata {
@@ -334,6 +374,52 @@ mod tests {
                 .unwrap()
                 .is_some()
         );
+    }
+
+    #[test]
+    fn feeds_download_the_selected_prerelease_instead_of_latest() {
+        for base in ["http://127.0.0.1:4321", "https://updates.example.com/app"] {
+            let source = if base.starts_with("http:") {
+                Source::local(base).unwrap()
+            } else {
+                Source::feed(base).unwrap()
+            };
+            let config = alpha("1.2.0-alpha.1");
+            let mut chosen = entry("v1.3.0-alpha.2", false, true);
+            chosen["assets"] = serde_json::json!([{
+                "name": "chosen.zip", "size": 10,
+                "browser_download_url": format!("{base}/chosen.zip")
+            }]);
+            let page = list(&[entry("v1.2.3", false, false), chosen.clone()]);
+            let transport = FakeTransport::default()
+                .serve(&format!("{base}/latest.json"), &list(&[]))
+                .serve(&format!("{base}/releases.json"), &page);
+            let release = newer(&config, &transport, &source).unwrap().unwrap();
+            assert_eq!(release.version, "1.3.0-alpha.2");
+            let found = metadata(&config, &transport, &source, &release.version).unwrap();
+            assert_eq!(found.asset("chosen.zip").unwrap().size, 10);
+            // Missing, duplicate and newly withdrawn releases are rejected.
+            for entries in [
+                vec![],
+                vec![chosen.clone(), chosen.clone()],
+                vec![entry("v1.3.0-alpha.2", true, true)],
+            ] {
+                let transport = FakeTransport::default()
+                    .serve(&format!("{base}/releases.json"), &list(&entries));
+                assert!(metadata(&config, &transport, &source, &release.version).is_err());
+            }
+        }
+    }
+
+    #[test]
+    fn a_stable_feed_does_not_offer_drafts_or_prereleases() {
+        let source = Source::feed("https://updates.example.com").unwrap();
+        for (draft, prerelease) in [(true, false), (false, true)] {
+            let body = entry("v1.2.3", draft, prerelease).to_string();
+            let transport = FakeTransport::default()
+                .serve("https://updates.example.com/latest.json", body.as_bytes());
+            assert!(newer(&ZAPFAST, &transport, &source).unwrap().is_none());
+        }
     }
 
     const LIST: &str = "https://api.github.com/repos/crmne/zapfast/releases?per_page=100&page=";
