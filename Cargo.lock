@@ -1252,6 +1252,7 @@ version = "0.4.1"
 dependencies = [
  "cpal",
  "log",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]

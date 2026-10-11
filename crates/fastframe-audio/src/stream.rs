@@ -237,6 +237,8 @@ where
     device.build_output_stream::<T, _, _>(
         *config,
         move |data: &mut [T], info: &cpal::OutputCallbackInfo| {
+            #[cfg(target_os = "windows")]
+            crate::mmcss::join_once();
             scratch.clear();
             scratch.resize(data.len(), 0.0);
             // The app's thread only takes the lock while (re)opening, before
