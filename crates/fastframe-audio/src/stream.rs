@@ -57,7 +57,7 @@ pub(crate) fn open<R: Render>(
 ) -> Result<Live, OpenError> {
     let host = cpal::default_host();
     let (device, default_at_open) = pick(&host, &options.device)?;
-    let name = device.to_string();
+    let name = device_name(&device).map_err(OpenError::from)?;
     let default = device.default_output_config().map_err(OpenError::from)?;
     let format = default.sample_format();
     let range = match *default.buffer_size() {
@@ -160,8 +160,10 @@ fn pick(host: &cpal::Host, wanted: &Device) -> Result<(cpal::Device, Option<Stri
         Device::Named(name) => Some(name.as_str()),
     };
     if wanted.is_some() {
-        let devices: Vec<cpal::Device> = host.output_devices().map_err(OpenError::from)?.collect();
-        let names: Vec<String> = devices.iter().map(ToString::to_string).collect();
+        let (names, devices) =
+            plan::named(host.output_devices().map_err(OpenError::from)?, |device| {
+                device_name(device).ok()
+            });
         match plan::choose(&names, wanted) {
             Choice::Named(index) => {
                 if let Some(device) = devices.into_iter().nth(index) {
@@ -178,8 +180,15 @@ fn pick(host: &cpal::Host, wanted: &Device) -> Result<(cpal::Device, Option<Stri
         }
     }
     let device = host.default_output_device().ok_or(OpenError::NoDevice)?;
-    let name = device.to_string();
+    let name = device_name(&device).map_err(OpenError::from)?;
     Ok((device, Some(name)))
+}
+
+/// The device's name. A device that is going away can fail to describe
+/// itself, and cpal's `Display` turns that into a `fmt::Error`, which
+/// `to_string` panics on. This asks for the description instead.
+fn device_name(device: &cpal::Device) -> Result<String, cpal::Error> {
+    Ok(device.description()?.name().to_owned())
 }
 
 /// Builds a stream that renders through `renderer` in the device's sample
@@ -278,19 +287,21 @@ where
     )
 }
 
-/// The default output's name, or `None` when there is none.
+/// The default output's name, or `None` when there is none or it cannot be
+/// named just now.
 pub(crate) fn default_output_name() -> Option<String> {
     cpal::default_host()
         .default_output_device()
-        .map(|device| device.to_string())
+        .and_then(|device| device_name(&device).ok())
 }
 
-/// Every output device's name. Nothing is opened.
+/// Every output device's name. Nothing is opened. A device that cannot be
+/// named is left out.
 pub(crate) fn output_device_names() -> Result<Vec<String>, OpenError> {
     Ok(cpal::default_host()
         .output_devices()
         .map_err(OpenError::from)?
-        .map(|device| device.to_string())
+        .filter_map(|device| device_name(&device).ok())
         .collect())
 }
 

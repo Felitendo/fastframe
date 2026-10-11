@@ -95,6 +95,19 @@ pub(crate) enum Choice {
     },
 }
 
+/// The devices that can be named, with their names at the same indexes. A
+/// device that cannot be named (it is going away) is left out, so an index
+/// from [`choose`] over the names finds its device.
+pub(crate) fn named<D>(
+    devices: impl IntoIterator<Item = D>,
+    name: impl Fn(&D) -> Option<String>,
+) -> (Vec<String>, Vec<D>) {
+    devices
+        .into_iter()
+        .filter_map(|device| Some((name(&device)?, device)))
+        .unzip()
+}
+
 pub(crate) fn choose(names: &[String], wanted: Option<&str>) -> Choice {
     match wanted.map(str::trim).filter(|name| !name.is_empty()) {
         None => Choice::Default { missing: None },
@@ -175,6 +188,19 @@ pub(crate) fn blocks(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_device_that_cannot_be_named_is_left_out_and_the_rest_keep_their_names() {
+        // cpal cannot name a device that is going away. Its id 2 stands for
+        // one here.
+        let (names, devices) = named([1, 2, 3], |id| (*id != 2).then(|| format!("output {id}")));
+        assert_eq!(names, ["output 1", "output 3"]);
+        assert_eq!(devices, [1, 3]);
+        let Choice::Named(index) = choose(&names, Some("output 3")) else {
+            panic!("output 3 is there");
+        };
+        assert_eq!(devices[index], 3);
+    }
 
     #[test]
     fn the_preferred_rate_comes_first_then_the_devices_then_the_drivers_buffer() {
