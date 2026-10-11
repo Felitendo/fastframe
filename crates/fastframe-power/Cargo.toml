@@ -1,0 +1,53 @@
+[package]
+name = "fastframe-power"
+description = "The device's power, session and network state for an egui app: energy saver, battery, display, lock, reach and cost, sleep and wake, and App Nap"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+keywords = ["power", "battery", "sleep", "metered", "desktop"]
+categories = ["gui", "os"]
+
+[dependencies]
+# Every change and event is logged, and why a reader could not start.
+log.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# The desktop portal, power-profiles-daemon and logind, over D-Bus on
+# threads of their own. Already in every app that talks to the session bus.
+zbus.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# Low Power Mode and App Nap activities through NSProcessInfo. The versions
+# fastframe-tray and the apps already build.
+objc2.workspace = true
+objc2-foundation = { workspace = true, features = ["NSProcessInfo"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+# Power settings, sleep and wake, the network hint, the session window and
+# EcoQoS. The features Spotifast already compiles for them (Gdi for the
+# window class).
+windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_NetworkManagement_IpHelper", "Win32_Networking_WinSock", "Win32_System_LibraryLoader", "Win32_System_Power", "Win32_System_RemoteDesktop", "Win32_System_SystemServices", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging"] }
+
+# The workspace forbids unsafe code. The readers need it for Win32
+# callbacks, a hidden window and SystemConfiguration, so this crate carries
+# the workspace's lints with `unsafe_code` lowered to `deny`, allowed only in
+# the modules that talk to the OS (`windows.rs`, `macos.rs`), each block with
+# a SAFETY note.
+[lints.rust]
+unsafe_code = "deny"
+missing_docs = "warn"
+unreachable_pub = "warn"
+rust_2018_idioms = { level = "warn", priority = -1 }
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+dbg_macro = "warn"
+todo = "warn"
+unwrap_used = "warn"
+print_stdout = "warn"
+print_stderr = "warn"
