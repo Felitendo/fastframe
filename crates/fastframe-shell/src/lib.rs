@@ -59,8 +59,8 @@
 
 use std::cell::RefCell;
 use std::rc::Rc;
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::sync::{Arc, Condvar, Mutex};
+use std::time::{Duration, Instant};
 
 pub mod window;
 
@@ -116,8 +116,14 @@ pub enum Closed {
 /// What a headless tick asks for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Headless {
-    /// Keep running in the background.
+    /// Keep running in the background; the next tick comes after
+    /// [`HEADLESS_TICK`], or sooner when the [`Waker`] wakes.
     Wait,
+    /// Keep running in the background with nothing due for this long: the
+    /// next tick comes after it, or sooner when the [`Waker`] wakes. An app
+    /// with nothing playing or pending asks for a long wait so the process
+    /// stays asleep instead of ticking every [`HEADLESS_TICK`].
+    WaitFor(Duration),
     /// Open a window.
     Show,
     /// End the app.
@@ -130,18 +136,19 @@ pub struct Shell<A> {
     app: A,
     waker: Waker,
     start_hidden: bool,
-    idle: fn(Duration),
+    idle: Option<fn(Duration)>,
 }
 
 impl<A: Resident> Shell<A> {
     /// A shell for `app`. `waker` is attached to each window as it is made
-    /// and detached when it closes.
+    /// and detached when it closes. Between headless ticks the shell sleeps
+    /// until the next is due or `waker` wakes it, whichever comes first.
     pub fn new(app: A, waker: &Waker) -> Self {
         Self {
             app,
             waker: waker.clone(),
             start_hidden: false,
-            idle: std::thread::sleep,
+            idle: None,
         }
     }
 
@@ -154,9 +161,12 @@ impl<A: Resident> Shell<A> {
     /// Waits between headless ticks with `idle` instead of sleeping.
     ///
     /// On macOS a status item only answers while AppKit's event loop runs, so
-    /// an app with a tray passes `fastframe_tray::idle` here.
+    /// an app with a tray passes `fastframe_tray::idle` here. `idle` cannot be
+    /// cut short, so a wake is seen at the next [`HEADLESS_TICK`]. Elsewhere
+    /// nothing needs the main thread while it waits: leave this unset and the
+    /// shell sleeps until the [`Waker`] wakes it.
     pub fn idle(mut self, idle: fn(Duration)) -> Self {
-        self.idle = idle;
+        self.idle = Some(idle);
         self
     }
 
@@ -211,7 +221,8 @@ impl<A: Resident> Shell<A> {
             with_app(&slot, Resident::window_gone);
             loop {
                 match with_app(&slot, |app| app.headless_frame(&headless)) {
-                    Some(Headless::Wait) => idle(HEADLESS_TICK),
+                    Some(Headless::Wait) => pause(idle, &waker, HEADLESS_TICK),
+                    Some(Headless::WaitFor(wait)) => pause(idle, &waker, wait),
                     Some(Headless::Show) => continue 'windows,
                     Some(Headless::Quit) | None => break 'windows,
                 }
@@ -221,6 +232,33 @@ impl<A: Resident> Shell<A> {
             app.shutdown();
         }
         Ok(())
+    }
+}
+
+/// Waits up to `wait` between headless ticks. With an app's `idle`, waits in
+/// slices of at most [`HEADLESS_TICK`] and looks at the waker between them;
+/// without one, sleeps until the waker wakes or `wait` runs out.
+fn pause(idle: Option<fn(Duration)>, waker: &Waker, wait: Duration) {
+    let Some(idle) = idle else {
+        waker.sleep(wait);
+        return;
+    };
+    if wait <= HEADLESS_TICK {
+        idle(wait);
+        return;
+    }
+    // Counts down from the start rather than to a deadline: an app may ask to
+    // wait for `Duration::MAX`, and no `Instant` lies that far ahead.
+    let started = Instant::now();
+    loop {
+        let left = wait.saturating_sub(started.elapsed());
+        if left.is_zero() {
+            return;
+        }
+        idle(left.min(HEADLESS_TICK));
+        if waker.take_woken() {
+            return;
+        }
     }
 }
 
@@ -306,8 +344,22 @@ impl<A> Drop for Held<A> {
 /// Background threads and the tray hold this instead of an `egui::Context`,
 /// because the context changes with every window and there is none while the
 /// app runs headless.
+///
+/// It also ends the shell's sleep between headless ticks, so a tray click, a
+/// media key or a backend event is handled at once without the app ticking
+/// while nothing happens.
 #[derive(Clone, Default)]
-pub struct Waker(Arc<Mutex<Option<egui::Context>>>);
+pub struct Waker {
+    window: Arc<Mutex<Option<egui::Context>>>,
+    headless: Arc<Alarm>,
+}
+
+/// Whether a wake arrived, and the headless sleep it ends.
+#[derive(Default)]
+struct Alarm {
+    woken: Mutex<bool>,
+    ring: Condvar,
+}
 
 impl std::fmt::Debug for Waker {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -329,11 +381,31 @@ impl Waker {
         *self.lock() = None;
     }
 
-    /// Asks the window, if there is one, for a new frame.
+    /// Asks the window, if there is one, for a new frame, and ends the
+    /// shell's sleep when there is none.
     pub fn wake(&self) {
         if let Some(ctx) = self.context() {
             ctx.request_repaint();
         }
+        *lock(&self.headless.woken) = true;
+        self.headless.ring.notify_all();
+    }
+
+    /// Sleeps until [`wake`](Self::wake) is called or `timeout` passes, and
+    /// clears the wake.
+    fn sleep(&self, timeout: Duration) {
+        let woken = lock(&self.headless.woken);
+        let (mut woken, _) = self
+            .headless
+            .ring
+            .wait_timeout_while(woken, timeout, |woken| !*woken)
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *woken = false;
+    }
+
+    /// Whether [`wake`](Self::wake) was called since the last look, clearing it.
+    fn take_woken(&self) -> bool {
+        std::mem::take(&mut *lock(&self.headless.woken))
     }
 
     /// Asks the window, if there is one, for a frame after `delay`.
@@ -348,10 +420,14 @@ impl Waker {
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Option<egui::Context>> {
-        self.0
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        lock(&self.window)
     }
+}
+
+fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 #[cfg(test)]
@@ -612,5 +688,79 @@ mod tests {
             2,
             "detached when the window closed"
         );
+    }
+
+    /// A wake from another thread ends the headless sleep at once, however
+    /// long the app asked to wait.
+    #[test]
+    fn a_wake_ends_the_headless_sleep() {
+        let waker = Waker::default();
+        let other = waker.clone();
+        let started = Instant::now();
+        let ringer = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(30));
+            other.wake();
+        });
+        waker.sleep(Duration::from_secs(30));
+        assert!(started.elapsed() < Duration::from_secs(10));
+        ringer.join().unwrap();
+    }
+
+    /// A wake that came before the sleep counts once: that sleep ends at once
+    /// and clears it, and the next one lasts its whole timeout.
+    #[test]
+    fn a_wake_counts_once() {
+        let waker = Waker::default();
+        waker.wake();
+        let started = Instant::now();
+        waker.sleep(Duration::from_secs(30));
+        assert!(started.elapsed() < Duration::from_secs(10), "already woken");
+        let started = Instant::now();
+        waker.sleep(Duration::from_millis(50));
+        assert!(started.elapsed() >= Duration::from_millis(40), "cleared");
+        assert!(!waker.take_woken());
+    }
+
+    /// Without an app's `idle`, a long wait asked for by the app sleeps on the
+    /// waker, and the shell carries on with the next tick after it.
+    #[test]
+    fn a_long_wait_sleeps_until_the_next_tick() {
+        let waker = Waker::default();
+        let script = script(
+            &[Closed::Hide],
+            &[Headless::WaitFor(Duration::from_millis(20)), Headless::Quit],
+            false,
+        );
+        let started = Instant::now();
+        Shell::new(script, &waker)
+            .run(|lease| {
+                let mut held = lease.take(&egui::Context::default());
+                held.now = held.closes.remove(0);
+                Ok::<(), ()>(())
+            })
+            .unwrap();
+        assert!(started.elapsed() >= Duration::from_millis(15));
+        assert_eq!(calls(), ["window_gone", "tick", "tick", "shutdown"]);
+    }
+
+    /// With an app's `idle`, a long wait runs it in ticks and stops as soon
+    /// as a wake is seen between them, even a wait with no end.
+    #[test]
+    fn a_long_wait_with_an_idle_stops_at_a_wake() {
+        thread_local! {
+            static WAKER: RefCell<Option<Waker>> = const { RefCell::new(None) };
+        }
+        fn ring_on_second(duration: Duration) {
+            assert!(duration <= HEADLESS_TICK);
+            IDLED.with(|idled| idled.set(idled.get() + 1));
+            if IDLED.with(Cell::get) == 2 {
+                WAKER.with(|waker| waker.borrow().as_ref().unwrap().wake());
+            }
+        }
+        let waker = Waker::default();
+        WAKER.with(|slot| *slot.borrow_mut() = Some(waker.clone()));
+        IDLED.with(|idled| idled.set(0));
+        pause(Some(ring_on_second), &waker, Duration::MAX);
+        assert_eq!(IDLED.with(Cell::get), 2);
     }
 }

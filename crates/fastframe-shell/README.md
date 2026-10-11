@@ -60,15 +60,18 @@ at once (`Closed::Reopen`, for switching to a different kind of window).
 Before `run_native`, `lease.peek(|app| ..)` reads the app to choose that
 window's options, such as which kind of window it is.
 
-- `Waker` repaints whichever window exists, from any thread, and does
-  nothing while none does.
+- `Waker` repaints whichever window exists, from any thread. While none
+  does, it ends the shell's sleep between headless ticks instead.
 - A hidden start (`start_hidden(true)`) calls `Resident::start_hidden`, which
   can refuse (no tray, so no way back). Anything that waits for a first frame
   must be released there: ZapFast's backend waited for one, so a hidden start
   at login connected nothing until the window was shown (ZapFast 5da9d38).
-- Headless ticks run every 150 ms (`HEADLESS_TICK`), idling through the
-  function given to `.idle`. On macOS pass `fastframe_tray::idle`, which runs
-  AppKit's loop so the menu-bar item keeps answering.
+- Headless ticks run every 150 ms (`HEADLESS_TICK`) for `Headless::Wait`, or
+  after the app's own `Headless::WaitFor(duration)` when nothing is due
+  sooner, and at once when the `Waker` wakes. Without `.idle` the shell
+  sleeps on the waker in between. On macOS pass `fastframe_tray::idle`,
+  which runs AppKit's loop so the menu-bar item keeps answering; it runs in
+  ticks, so there a wake is seen at the next one.
 - If `run_native` fails, `run` returns the error and the app is dropped
   without `shutdown`, as the apps' `?` did.
 
