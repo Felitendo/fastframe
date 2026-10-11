@@ -43,6 +43,7 @@ written for one of those apps first and moved here once another app needed it.
 | [`fastframe-scroll`](crates/fastframe-scroll) | Scrolling that feels like the platform's: a 120-point wheel step, and Linux touchpad gestures that keep their speed, glide after the lift, and hold one axis. |
 | [`fastframe-instance`](crates/fastframe-instance) | One running copy per user: a crash-safe lock, and a private channel a second launch hands its request over (show the window, open a link, any line the app understands). |
 | [`fastframe-now-playing`](crates/fastframe-now-playing) | The desktop's media controls: what is playing, with artwork, in MPRIS, the Windows media overlay and the macOS Now Playing panel, and the media keys and buttons back. |
+| [`fastframe-file`](crates/fastframe-file) | Replaces a file without ever leaving it half written: a temporary file beside it, flushed, then moved over it, privately if asked. |
 | [`fastframe-update`](crates/fastframe-update) | Self-update from GitHub releases: detects package-managed installs, verifies signed checksums, installs through a helper with rollback, keeps the handoff format older app versions use, moves renamed installations onto the new name with their launchers, and offers an opt-in pre-release channel. |
 
 ## Status

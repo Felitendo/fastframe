@@ -1,0 +1,31 @@
+[package]
+name = "fastframe-file"
+description = "Replace a file on disk without ever leaving it half written: a temporary file beside it, flushed, then moved over it"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+keywords = ["atomic", "file", "save", "settings", "desktop"]
+categories = ["filesystem"]
+
+[target.'cfg(windows)'.dependencies]
+# MoveFileExW with write-through, so the move itself reaches the disk. Already
+# in every app's tree, at this version.
+windows-sys = { workspace = true, features = ["Win32_Storage_FileSystem"] }
+
+[dev-dependencies]
+# Files in throwaway directories.
+tempfile.workspace = true
+
+# The workspace forbids unsafe code. Moving a file with write-through is one
+# Win32 call, so this crate carries the workspace's lints with `unsafe_code`
+# lowered to `deny`, allowed only in `windows.rs`, with a SAFETY note.
+[lints.rust]
+unsafe_code = "deny"
+missing_docs = "warn"
+unreachable_pub = "warn"
+rust_2018_idioms = { level = "warn", priority = -1 }
