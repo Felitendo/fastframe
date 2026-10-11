@@ -13,6 +13,9 @@ keywords = ["mpris", "media-keys", "now-playing", "egui", "desktop"]
 categories = ["gui", "multimedia::audio"]
 
 [dependencies]
+# The desktop entry MPRIS names, shared with the app's window and
+# notifications so they agree.
+fastframe-desktop = { path = "../fastframe-desktop" }
 # A warning when the controls cannot be set up.
 log.workspace = true
 

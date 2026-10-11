@@ -1,0 +1,21 @@
+[package]
+name = "fastframe-desktop"
+description = "Who the app is to the desktop, and what the desktop says: the desktop entry name a Flatpak exports, whether it runs on GNOME, and a desktop setting read through the portal"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+keywords = ["desktop", "flatpak", "gnome", "portal", "settings"]
+categories = ["gui", "os"]
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# One blocking portal call needs no tokio: zbus's own small executor does,
+# as in fastframe-text. Apps that enable zbus's tokio feature keep it.
+zbus = { version = "5.19", default-features = false, features = ["blocking-api", "async-io"] }
+
+[lints]
+workspace = true

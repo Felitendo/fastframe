@@ -1,0 +1,145 @@
+//! Who the app is to the desktop, and what the desktop says.
+//!
+//! - [`desktop_entry`]: the name of the app's desktop entry, as the desktop
+//!   knows it, for MPRIS, notifications and the window's app id, which must
+//!   all agree. Inside a Flatpak that is the sandbox's app id.
+//! - [`is_gnome`]: whether the session is GNOME, which handles some requests
+//!   its own way (it turns a window's request for attention into a notice).
+//! - [`setting`]: one of the desktop's settings, such as GNOME's clock format
+//!   or window button layout, read through the desktop portal. That works
+//!   inside a Flatpak too, where running `gsettings` does not, and needs no
+//!   process.
+//!
+//! ```no_run
+//! let entry = fastframe_desktop::desktop_entry("zapfast");
+//! let twelve_hour = fastframe_desktop::setting("org.gnome.desktop.interface", "clock-format")
+//!     .is_some_and(|format| format == "12h");
+//! if fastframe_desktop::is_gnome() { /* skip the attention request */ }
+//! # let _ = (entry, twelve_hour);
+//! ```
+
+/// The desktop entry the desktop knows the app by, for `own` (the entry's
+/// name without `.desktop`): the sandbox's app id inside a Flatpak, since the
+/// entry is exported under it there, and `own` elsewhere.
+#[must_use]
+pub fn desktop_entry(own: &str) -> String {
+    let flatpak_id = std::env::var("FLATPAK_ID").ok();
+    desktop_entry_for(flatpak_id.as_deref(), own).to_owned()
+}
+
+fn desktop_entry_for<'a>(flatpak_id: Option<&'a str>, own: &'a str) -> &'a str {
+    flatpak_id.filter(|id| !id.is_empty()).unwrap_or(own)
+}
+
+/// Whether the session is GNOME, from `XDG_CURRENT_DESKTOP`.
+#[must_use]
+pub fn is_gnome() -> bool {
+    names_gnome(std::env::var("XDG_CURRENT_DESKTOP").ok().as_deref())
+}
+
+/// Whether `desktops`, an `XDG_CURRENT_DESKTOP` value (a colon-separated
+/// list such as `ubuntu:GNOME`), names GNOME.
+fn names_gnome(desktops: Option<&str>) -> bool {
+    desktops.is_some_and(|desktops| {
+        desktops
+            .split(':')
+            .any(|name| name.trim().eq_ignore_ascii_case("GNOME"))
+    })
+}
+
+/// A string setting of the desktop's, such as
+/// `("org.gnome.desktop.interface", "clock-format")` or
+/// `("org.gnome.desktop.wm.preferences", "button-layout")`, read through the
+/// desktop portal's Settings interface.
+///
+/// `None` off Linux, without a session bus or a portal, or when the portal
+/// does not have the key. The call gives up after about a second, so a portal
+/// that is still starting cannot hold the app up for long. GNOME's portal and
+/// the GTK one serve GNOME's own schemas, and other desktops' portals serve
+/// what they choose.
+#[must_use]
+pub fn setting(namespace: &str, key: &str) -> Option<String> {
+    #[cfg(target_os = "linux")]
+    {
+        portal::read_string(namespace, key)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (namespace, key);
+        None
+    }
+}
+
+#[cfg(target_os = "linux")]
+mod portal {
+    use std::time::Duration;
+
+    use zbus::blocking::{Proxy, connection};
+    use zbus::zvariant::{OwnedValue, Value};
+
+    pub(crate) fn read_string(namespace: &str, key: &str) -> Option<String> {
+        let connection = connection::Builder::session()
+            .ok()?
+            .method_timeout(Duration::from_secs(1))
+            .build()
+            .ok()?;
+        let proxy = Proxy::new(
+            &connection,
+            "org.freedesktop.portal.Desktop",
+            "/org/freedesktop/portal/desktop",
+            "org.freedesktop.portal.Settings",
+        )
+        .ok()?;
+        // `ReadOne` (portal version 2), or the older `Read`, which wraps the
+        // value in a second variant.
+        let value: OwnedValue = proxy
+            .call("ReadOne", &(namespace, key))
+            .or_else(|_| proxy.call("Read", &(namespace, key)))
+            .ok()?;
+        string(&value)
+    }
+
+    pub(super) fn string(value: &Value<'_>) -> Option<String> {
+        match value {
+            Value::Str(text) => Some(text.as_str().to_owned()),
+            Value::Value(inner) => string(inner),
+            _ => None,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_desktop_entry_is_the_flatpak_id_inside_a_sandbox() {
+        assert_eq!(
+            desktop_entry_for(Some("com.getsolco.Solco"), "solco"),
+            "com.getsolco.Solco"
+        );
+        assert_eq!(desktop_entry_for(None, "solco"), "solco");
+        assert_eq!(desktop_entry_for(Some(""), "solco"), "solco");
+    }
+
+    #[test]
+    fn gnome_is_found_in_a_list_of_desktops() {
+        assert!(names_gnome(Some("GNOME")));
+        assert!(names_gnome(Some("ubuntu:GNOME")));
+        assert!(names_gnome(Some("gnome-classic:gnome")));
+        assert!(!names_gnome(Some("Hyprland")));
+        assert!(!names_gnome(Some("GNOME-Flashback-ish")));
+        assert!(!names_gnome(None));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_setting_is_read_through_either_variant_wrapping() {
+        use zbus::zvariant::Value;
+        let plain = Value::from("12h");
+        let wrapped = Value::Value(Box::new(Value::from("12h")));
+        assert_eq!(portal::string(&plain).as_deref(), Some("12h"));
+        assert_eq!(portal::string(&wrapped).as_deref(), Some("12h"));
+        assert_eq!(portal::string(&Value::from(3u32)), None);
+    }
+}

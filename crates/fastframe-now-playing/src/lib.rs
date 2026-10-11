@@ -411,18 +411,10 @@ fn file_url(path: &Path, escaped: bool) -> String {
 }
 
 /// The desktop entry the media controls name for an app whose own entry is
-/// `own` (without `.desktop`): the sandbox's app id inside a Flatpak, since
-/// the entry is exported under it, and `own` elsewhere. An app that sets its
-/// window's app id to match its entry uses the same name.
-#[must_use]
-pub fn desktop_entry(own: &str) -> String {
-    let flatpak_id = std::env::var("FLATPAK_ID").ok();
-    desktop_entry_for(flatpak_id.as_deref(), own).to_owned()
-}
-
-fn desktop_entry_for<'a>(flatpak_id: Option<&'a str>, own: &'a str) -> &'a str {
-    flatpak_id.filter(|id| !id.is_empty()).unwrap_or(own)
-}
+/// `own`: the Flatpak app id inside the sandbox, `own` elsewhere. The same
+/// as [`fastframe_desktop::desktop_entry`], which the window's app id and
+/// notifications use too.
+pub use fastframe_desktop::desktop_entry;
 
 #[cfg(test)]
 mod tests;

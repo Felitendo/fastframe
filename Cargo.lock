@@ -1256,6 +1256,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "fastframe-desktop"
+version = "0.4.1"
+dependencies = [
+ "zbus",
+]
+
+[[package]]
 name = "fastframe-emoji"
 version = "0.4.1"
 dependencies = [
@@ -1353,6 +1360,7 @@ dependencies = [
 name = "fastframe-now-playing"
 version = "0.4.1"
 dependencies = [
+ "fastframe-desktop",
  "log",
  "mpris-server",
  "souvlaki",

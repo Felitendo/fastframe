@@ -90,16 +90,6 @@ fn an_artwork_url_escapes_what_a_url_would_read() {
     );
 }
 
-#[test]
-fn the_desktop_entry_is_the_flatpak_id_inside_a_sandbox() {
-    assert_eq!(
-        desktop_entry_for(Some("com.getsolco.Solco"), "solco"),
-        "com.getsolco.Solco"
-    );
-    assert_eq!(desktop_entry_for(None, "solco"), "solco");
-    assert_eq!(desktop_entry_for(Some(""), "solco"), "solco");
-}
-
 #[cfg(target_os = "linux")]
 mod mpris {
     use super::*;
