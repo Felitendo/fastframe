@@ -2,7 +2,7 @@
 //!
 //! Settings, sessions and credentials are rewritten whole. Writing over the
 //! file in place leaves it truncated if the app is killed or the power goes
-//! halfway through, and the app then starts from defaults. [`write`] writes a
+//! halfway through, and the app then starts from defaults. [`write()`] writes a
 //! temporary file beside the target instead, flushes it to the disk, and moves
 //! it over the target in one step, so a reader sees the old contents or the
 //! new ones, never part of either.
