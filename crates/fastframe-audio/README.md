@@ -92,14 +92,16 @@ from the renderer's `f32`.
 ## Keeping it working
 
 `maintain()` is cheap when nothing changed. It reopens a stream that failed
-or whose device went away, moves to a new default output, and lets the device
-go after a long pause; nothing happens between calls, so keep calling it
-while paused. It returns what it did:
+or whose device went away, or that stopped asking for sound without saying
+so (its clock stood still for two seconds while playing, as some drivers do
+when a device is rerouted), moves to a new default output, and lets the
+device go after a long pause. Nothing happens between calls, so keep calling
+it, playing or paused, at least every second or so. It returns what it did:
 
 - `Unchanged`;
 - `Reopened { device, sample_rate, channels, reason }`, with `reason` one of
-  `Failed`, `DefaultChanged` or `Resumed` (a reopen `resume()` made after an
-  idle release, reported by the next `maintain()`);
+  `Failed`, `DefaultChanged`, `Stalled` or `Resumed` (a reopen `resume()`
+  made after an idle release, reported by the next `maintain()`);
 - `Released`;
 - `Failed(error)`. A failed reopen is not remembered: the next `maintain()`
   or `resume()` tries again.

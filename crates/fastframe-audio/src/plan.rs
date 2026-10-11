@@ -162,6 +162,44 @@ pub(crate) fn needs_reopen(kind: cpal::ErrorKind) -> bool {
     )
 }
 
+/// How long a playing output may stand still before it counts as stuck: a
+/// few times the longest device buffer.
+pub(crate) const STALL: Duration = Duration::from_secs(2);
+
+/// Watches a playing output's clock for a stream that stopped asking for
+/// sound without reporting an error, which some drivers do when a device is
+/// rerouted (Spotifast #731).
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Stall {
+    played: Duration,
+    since: Instant,
+    seen: Instant,
+}
+
+impl Stall {
+    pub(crate) fn new(played: Duration, now: Instant) -> Self {
+        Self {
+            played,
+            since: now,
+            seen: now,
+        }
+    }
+
+    /// Notes how far the output has played; true once it has stood still
+    /// for [`STALL`]. A gap of [`STALL`] or more between two looks is time
+    /// the app did not run (the system slept, or suspended it), when the
+    /// output could not play either, so it starts the count again.
+    pub(crate) fn observe(&mut self, played: Duration, now: Instant) -> bool {
+        let asleep = now.saturating_duration_since(self.seen) >= STALL;
+        self.seen = now;
+        if played != self.played || asleep {
+            *self = Self::new(played, now);
+            return false;
+        }
+        now.saturating_duration_since(self.since) >= STALL
+    }
+}
+
 /// The interleaved sample ranges to render one callback's buffer in, of at
 /// most `max_frames` frames each. Lengths in samples, so the last block
 /// holds what is left.
@@ -382,6 +420,36 @@ mod tests {
             assert_eq!(kind_of(kind), ErrorKind::Recoverable, "{kind:?}");
             assert_eq!(needs_reopen(kind), reopen, "{kind:?}");
         }
+    }
+
+    #[test]
+    fn an_output_that_stands_still_while_playing_is_stuck() {
+        let start = Instant::now();
+        let ms = Duration::from_millis;
+        let mut stall = Stall::new(ms(0), start);
+        assert!(!stall.observe(ms(0), start + STALL / 2));
+        assert!(!stall.observe(ms(10), start + STALL), "it moved");
+        assert!(!stall.observe(ms(10), start + STALL + STALL / 2));
+        assert!(
+            stall.observe(ms(10), start + STALL * 2),
+            "nothing for STALL"
+        );
+        assert!(
+            !stall.observe(ms(20), start + STALL * 2 + ms(16)),
+            "moving again"
+        );
+    }
+
+    #[test]
+    fn time_asleep_does_not_count_as_stuck() {
+        let start = Instant::now();
+        let ms = Duration::from_millis;
+        let mut stall = Stall::new(ms(0), start);
+        assert!(!stall.observe(ms(0), start + ms(50)));
+        let woke = start + Duration::from_secs(600);
+        assert!(!stall.observe(ms(0), woke), "asleep, not stuck");
+        assert!(!stall.observe(ms(0), woke + STALL / 2));
+        assert!(stall.observe(ms(0), woke + STALL), "stuck after waking");
     }
 
     #[test]

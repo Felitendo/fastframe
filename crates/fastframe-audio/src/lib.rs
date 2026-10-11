@@ -243,6 +243,9 @@ pub enum Reason {
     DefaultChanged,
     /// [`Output::resume`] took back a device let go after a long pause.
     Resumed,
+    /// The stream stopped asking for sound while playing, without reporting
+    /// an error: the [`Clock`] stood still for two seconds.
+    Stalled,
 }
 
 /// What [`Output::maintain`] did.
@@ -285,6 +288,8 @@ pub struct Output<R: Render> {
     paused_at: Option<Instant>,
     /// A reopen [`resume`](Self::resume) made, for the next `maintain` to report.
     resumed: bool,
+    /// Whether the clock still moves while playing.
+    stall: plan::Stall,
     watch: Option<DefaultWatch>,
     device: String,
     sample_rate: u32,
@@ -329,6 +334,7 @@ impl<R: Render> Output<R> {
             paused: false,
             paused_at: None,
             resumed: false,
+            stall: plan::Stall::new(Duration::ZERO, Instant::now()),
             watch,
         })
     }
@@ -420,6 +426,9 @@ impl<R: Render> Output<R> {
             Some(Reason::DefaultChanged)
         } else if self.live.is_none() && !self.paused {
             Some(Reason::Failed)
+        } else if self.stalled() {
+            log::warn!("audio output: {} stopped playing; reopening", self.device);
+            Some(Reason::Stalled)
         } else {
             None
         };
@@ -498,6 +507,7 @@ impl<R: Render> Output<R> {
             self.paused,
         ) {
             Ok(live) => {
+                self.stall = plan::Stall::new(self.clock.played(), Instant::now());
                 self.device = live.device.clone();
                 self.sample_rate = live.sample_rate;
                 self.channels = live.channels;
@@ -509,6 +519,18 @@ impl<R: Render> Output<R> {
                 Err(error)
             }
         }
+    }
+
+    /// Whether the output is playing but its clock has stood still for
+    /// [`plan::STALL`]. Paused, nothing is expected to move.
+    fn stalled(&mut self) -> bool {
+        let now = Instant::now();
+        let played = self.clock.played();
+        if self.paused || self.live.is_none() {
+            self.stall = plan::Stall::new(played, now);
+            return false;
+        }
+        self.stall.observe(played, now)
     }
 
     fn reopened(&self, reason: Reason) -> Maintained {
