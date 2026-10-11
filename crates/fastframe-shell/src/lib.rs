@@ -1,5 +1,5 @@
 //! Keep an egui app running without a window, recreate the window on demand,
-//! and bring back windows restored off-screen.
+//! open it where it was, and bring back windows restored off-screen.
 //!
 //! A messaging client or a music player keeps working with its window closed:
 //! the connection, the playback, the tray item and the notifications live on.
@@ -51,8 +51,38 @@
 //!   the app supplies (the tray crate's `idle`, which serves AppKit on macOS).
 //! - [`Waker`] lets threads repaint whichever window exists, and does nothing
 //!   while none does.
+//! - [`window::Geometry`] remembers the window's size, position and
+//!   maximized state, and opens the next window with them.
 //! - [`window::recover_offscreen`] moves a window that opened on no connected
 //!   monitor onto the primary one.
+//! - [`window::raise_on_compositor`] asks niri to focus the existing window,
+//!   which Wayland does not let the app do itself.
+//!
+//! # Decide to hide in `logic`, not `ui`
+//!
+//! eframe runs only `eframe::App::logic` for a minimized or occluded window:
+//! it skips `ui`. A close request is only seen where it is read, so an app
+//! that decides "hide to the tray" in `ui` never decides it when a minimized
+//! window is closed (from the taskbar, say), and [`Resident::closed`] then
+//! quits the app instead of hiding it (Spotifast #725). Read the request in
+//! `logic`, and set there what `closed` reads:
+//!
+//! ```no_run
+//! # struct App { quit: bool, hide: bool, tray: bool }
+//! # struct Window { app: App }
+//! impl eframe::App for Window {
+//!     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+//!         let app = &mut self.app;
+//!         if ctx.input(|input| input.viewport().close_requested()) && !app.quit && app.tray {
+//!             app.hide = true;
+//!         }
+//!     }
+//!     fn ui(&mut self, _ui: &mut egui::Ui, _frame: &mut eframe::Frame) {}
+//! }
+//! ```
+//!
+//! The same holds for anything else that must happen whatever state the
+//! window is in, such as [`window::Geometry::remember`].
 //!
 //! Single-instance handling is not here: the apps use three different designs
 //! (see the README).
@@ -71,6 +101,11 @@ pub const HEADLESS_TICK: Duration = Duration::from_millis(150);
 /// What an app that outlives its window tells the [`Shell`].
 pub trait Resident {
     /// What to do once the window has closed.
+    ///
+    /// Whatever this reads (a wish to hide to the tray) must be set from
+    /// `eframe::App::logic`, not `ui`: eframe skips `ui` for a minimized
+    /// window, so a decision made there is missing when such a window is
+    /// closed, and the app quits instead of hiding. See the crate docs.
     fn closed(&self) -> Closed;
 
     /// The window is gone and the app is about to run headless. Reset what

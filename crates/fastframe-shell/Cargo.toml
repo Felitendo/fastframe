@@ -1,6 +1,6 @@
 [package]
 name = "fastframe-shell"
-description = "Keep an egui app running without a window, recreate the window on demand, and bring back windows restored off-screen"
+description = "Keep an egui app running without a window, recreate the window on demand, open it where it was, and bring back windows restored off-screen"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -19,6 +19,23 @@ egui.workspace = true
 eframe.workspace = true
 # One warning when a window is moved back on screen.
 log.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# Reads `niri msg --json windows` to find this process's window. Already in
+# every app's tree.
+serde_json.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# The screens' visible frames, which a window's title bar must stay on.
+# winit's macOS monitor positions mix scale factors, and AppKit is the only
+# one to ask before the window exists. The tray already brings these.
+objc2.workspace = true
+objc2-app-kit = { workspace = true, features = ["NSScreen"] }
+objc2-foundation = { workspace = true, features = ["NSArray", "NSEnumerator", "NSGeometry"] }
+
+[dev-dependencies]
+# The niri parser's tests run on every platform.
+serde_json.workspace = true
 
 [lints]
 workspace = true

@@ -1,10 +1,25 @@
-//! Bring back a window restored where no monitor shows it.
+//! Open each window where the last one was, bring back a window restored
+//! where no monitor shows it, and bring an existing window forward on
+//! compositors that allow it.
 //!
-//! eframe restores a window's saved position. When the displays were
-//! rearranged, or a secondary display comes up late after a restart, that
-//! position can be on no monitor at all, and Windows then leaves the window
-//! unreachable (ZapFast #171). Call [`recover_offscreen`] once, on a new
-//! window's first frame:
+//! [`Geometry`] remembers the window's size, position and maximized state.
+//! The app keeps it in its settings, folds the window into it every frame,
+//! and applies it to the next window's `ViewportBuilder` before that window
+//! exists, so the window opens in place instead of jumping there:
+//!
+//! ```no_run
+//! # struct Settings { geometry: fastframe_shell::window::Geometry }
+//! # let settings = Settings { geometry: Default::default() };
+//! let viewport = egui::ViewportBuilder::default().with_inner_size([1180.0, 780.0]);
+//! let viewport = settings.geometry.apply(viewport);
+//! ```
+//!
+//! eframe restores a window's saved position as it is. When the displays
+//! were rearranged, or a secondary display comes up late after a restart,
+//! that position can be on no monitor at all, and Windows then leaves the
+//! window unreachable (ZapFast #171), as macOS does a borderless one
+//! (Spotifast #719). Call [`recover_offscreen`] once, on a new window's first
+//! frame:
 //!
 //! ```no_run
 //! struct Window { recovery_checked: bool }
@@ -20,12 +35,22 @@
 //! ```
 //!
 //! Wayland does not reveal global window positions, so nothing happens
-//! there. macOS keeps windows on a screen itself, and winit's macOS
-//! coordinates disagree between displays with different scale factors, so it
-//! is left alone. Windows and X11 report the window and every monitor in the
-//! same physical pixels.
+//! there. Windows and X11 report the window and every monitor in the same
+//! physical pixels. winit's macOS monitor coordinates disagree between
+//! displays with different scale factors, so there the screens come from
+//! AppKit, in points, and the window must keep its title bar on one of them,
+//! clear of the menu bar and the Dock.
+//!
+//! Wayland also drops a client's request to focus its own window. Where the
+//! compositor has a command for it, [`raise_on_compositor`] asks it instead.
 
 use egui::{Pos2, Rect};
+
+mod geometry;
+mod raise;
+
+pub use geometry::Geometry;
+pub use raise::raise_on_compositor;
 
 /// Where to move a window that no connected monitor shows, in physical
 /// virtual-desktop pixels, or `None` to leave it where it is.
@@ -43,18 +68,22 @@ pub fn recovered_position(window: Rect, monitors: &[Rect]) -> Option<Pos2> {
     {
         return None;
     }
+    Some(centered(window, target))
+}
+
+/// Where `window` sits in the middle of `target`, pinned to its top-left
+/// corner when it is larger.
+fn centered(window: Rect, target: Rect) -> Pos2 {
     let slack = (target.size() - window.size()).max(egui::Vec2::ZERO);
-    Some((target.min + slack / 2.0).round())
+    (target.min + slack / 2.0).round()
 }
 
 /// Moves the window onto the primary monitor when it is on none of the
-/// connected ones. Does nothing on macOS, on Wayland, for a minimized
-/// window, and without a native window (tests).
+/// connected ones (on macOS, when its title bar is on none of the screens'
+/// visible areas). Does nothing on Wayland, for a minimized window (on
+/// macOS, a full-screen one), and without a native window (tests).
 pub fn recover_offscreen(ctx: &egui::Context, frame: &eframe::Frame) {
-    #[cfg(not(target_os = "macos"))]
     recover(ctx, frame);
-    #[cfg(target_os = "macos")]
-    let _ = (ctx, frame);
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -99,12 +128,113 @@ fn recover(ctx: &egui::Context, frame: &eframe::Frame) {
     ctx.send_viewport_cmd(move_to_physical(target, pixels_per_point));
 }
 
+/// macOS: winit gives the window's frame in physical pixels at the window's
+/// own scale factor, so dividing by it gives AppKit points again, the unit
+/// the screens come in. A window just created is not minimized, and asking
+/// AppKit whether it is can deadlock (emilk/egui#3494), so that is not asked.
+/// A full-screen window covers the menu bar, where no title bar may be, and
+/// is left alone.
+#[cfg(target_os = "macos")]
+fn recover(ctx: &egui::Context, frame: &eframe::Frame) {
+    let Some(window) = frame.winit_window() else {
+        return;
+    };
+    if window.fullscreen().is_some() {
+        return;
+    }
+    let Some(screens) = visible_screens() else {
+        return;
+    };
+    let Ok(position) = window.outer_position() else {
+        return;
+    };
+    let scale = window.scale_factor();
+    let position = position.to_logical::<f32>(scale);
+    let size = window.outer_size().to_logical::<f32>(scale);
+    let window = Rect::from_min_size(
+        egui::pos2(position.x, position.y),
+        egui::vec2(size.width, size.height),
+    );
+    let Some(target) = recovered_titlebar_position(window, &screens) else {
+        return;
+    };
+    log::warn!("the restored window's title bar was on no screen; moving it to the main one");
+    let pixels_per_point = ctx.input(|input| input.pixels_per_point);
+    ctx.send_viewport_cmd(move_to_physical(target * scale as f32, pixels_per_point));
+}
+
+/// Where to move a window whose title bar is on none of `screens`, in the
+/// same points, or `None` to leave it. It goes to the middle of the first
+/// screen (the main one).
+#[cfg(any(target_os = "macos", test))]
+fn recovered_titlebar_position(window: Rect, screens: &[Rect]) -> Option<Pos2> {
+    let target = *screens.first()?;
+    (!titlebar_on_screen(window.min, screens)).then(|| centered(window, target))
+}
+
+/// Whether a window placed at `position` keeps its title bar on one of
+/// `screens`, so it can be dragged. A point a little inside the frame is
+/// checked, because a maximized window can start a few pixels off the
+/// screen's edge.
+fn titlebar_on_screen(position: Pos2, screens: &[Rect]) -> bool {
+    let anchor = position + egui::vec2(32.0, 16.0);
+    anchor.is_finite() && screens.iter().any(|screen| screen.contains(anchor))
+}
+
+/// The area each connected screen leaves for windows (without the menu bar
+/// and the Dock), main screen first, in points measured down from the top of
+/// the main screen as winit measures windows. `None` off the main thread,
+/// where AppKit cannot be asked, and without any screen.
+#[cfg(target_os = "macos")]
+fn visible_screens() -> Option<Vec<Rect>> {
+    use objc2::MainThreadMarker;
+    use objc2_app_kit::NSScreen;
+
+    let screens = NSScreen::screens(MainThreadMarker::new()?);
+    let main = screens.iter().next()?.frame();
+    let main_top = main.origin.y + main.size.height;
+    Some(
+        screens
+            .iter()
+            .map(|screen| {
+                let area = screen.visibleFrame();
+                flipped(
+                    main_top,
+                    [
+                        area.origin.x,
+                        area.origin.y,
+                        area.size.width,
+                        area.size.height,
+                    ],
+                )
+            })
+            .collect(),
+    )
+}
+
+/// Only macOS is asked before the window exists; elsewhere
+/// [`recover_offscreen`] checks the window once it does.
+#[cfg(not(target_os = "macos"))]
+fn visible_screens() -> Option<Vec<Rect>> {
+    None
+}
+
+/// Turns an AppKit screen rectangle `[x, y, width, height]` into window
+/// coordinates. AppKit measures up from the bottom of the main screen, and
+/// winit down from its top.
+#[cfg(any(target_os = "macos", test))]
+fn flipped(main_top: f64, [x, y, width, height]: [f64; 4]) -> Rect {
+    Rect::from_min_size(
+        egui::pos2(x as f32, (main_top - y - height) as f32),
+        egui::vec2(width as f32, height as f32),
+    )
+}
+
 /// The command that moves the window to `target` physical pixels.
 ///
 /// egui-winit multiplies the position by the window's pixels per point, so
 /// dividing by the same factor asks for exactly these physical pixels,
 /// whatever the scale of the monitor the window is on now.
-#[cfg(any(not(target_os = "macos"), test))]
 fn move_to_physical(target: Pos2, pixels_per_point: f32) -> egui::ViewportCommand {
     egui::ViewportCommand::OuterPosition(target / pixels_per_point)
 }
@@ -185,5 +315,53 @@ mod tests {
             move_to_physical(pos2(2290.0, 150.0), 1.25),
             egui::ViewportCommand::OuterPosition(pos2(1832.0, 120.0))
         );
+    }
+
+    /// AppKit's screens grow up from the bottom of the main one; a screen
+    /// above it has a larger y there and a negative one in window
+    /// coordinates.
+    #[test]
+    fn appkit_screens_are_flipped_to_window_coordinates() {
+        // The main screen, 1440 by 900 points, with a 25-point menu bar.
+        assert_eq!(
+            flipped(900.0, [0.0, 0.0, 1440.0, 875.0]),
+            monitor(0.0, 25.0, 1440.0, 875.0)
+        );
+        // A 1920 by 1080 screen above it.
+        assert_eq!(
+            flipped(900.0, [0.0, 900.0, 1920.0, 1080.0]),
+            monitor(0.0, -1080.0, 1920.0, 1080.0)
+        );
+    }
+
+    /// Spotifast #719: a window saved on a display that has since been
+    /// unplugged comes back to the main screen; one whose title bar is
+    /// under the menu bar too.
+    #[test]
+    fn a_title_bar_on_no_screen_moves_to_the_main_one() {
+        let screens = [
+            monitor(0.0, 25.0, 1440.0, 875.0),
+            monitor(1440.0, 0.0, 1920.0, 1080.0),
+        ];
+        let on_second = Rect::from_min_size(pos2(2000.0, 100.0), vec2(400.0, 300.0));
+        assert_eq!(recovered_titlebar_position(on_second, &screens), None);
+
+        let unplugged = Rect::from_min_size(pos2(-2000.0, 100.0), vec2(400.0, 300.0));
+        assert_eq!(
+            recovered_titlebar_position(unplugged, &screens),
+            Some(pos2(520.0, 313.0))
+        );
+
+        // Most of this window is on the screen, but not its title bar.
+        let under_menu_bar = Rect::from_min_size(pos2(100.0, 0.0), vec2(400.0, 300.0));
+        assert!(recovered_titlebar_position(under_menu_bar, &screens).is_some());
+    }
+
+    #[test]
+    fn a_maximized_window_a_few_pixels_off_the_edge_keeps_its_title_bar() {
+        let screens = [monitor(0.0, 0.0, 1920.0, 1040.0)];
+        assert!(titlebar_on_screen(pos2(-8.0, -8.0), &screens));
+        assert!(!titlebar_on_screen(pos2(f32::NAN, 0.0), &screens));
+        assert!(!titlebar_on_screen(pos2(0.0, 0.0), &[]));
     }
 }

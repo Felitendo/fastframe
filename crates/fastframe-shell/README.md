@@ -1,7 +1,7 @@
 # fastframe-shell
 
 Keep an egui app running without a window, recreate the window on demand,
-and bring back windows restored off-screen.
+open it where it was, and bring back windows restored off-screen.
 
 eframe ties the event loop to the window. ZapFast and Spotifast keep working
 with the window closed (the connection, playback, the tray, notifications),
@@ -75,6 +75,64 @@ window's options, such as which kind of window it is.
 - If `run_native` fails, `run` returns the error and the app is dropped
   without `shutdown`, as the apps' `?` did.
 
+## Hiding to the tray: decide in `logic`
+
+eframe runs only `App::logic` for a minimized or occluded window; it skips
+`ui`. Read the close request and set what `closed()` reads in `logic`:
+
+```rust
+fn logic(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+    if ctx.input(|input| input.viewport().close_requested())
+        && !self.app.quit_requested
+        && self.app.hides_to_tray()
+    {
+        self.app.hide_intent = true;
+    }
+}
+```
+
+Decided in `ui`, closing a minimized window (from the taskbar, say) reaches
+the shell with no wish to hide, and the app quits instead of going to the
+tray (Spotifast #725).
+
+## Window size and place
+
+```rust
+// Before the window exists: the default size, then what was remembered.
+let geometry = lease.peek(|app| app.settings.geometry);
+let viewport = egui::ViewportBuilder::default().with_inner_size([1180.0, 780.0]);
+let viewport = geometry.apply(viewport);
+
+// Every frame, in `logic`:
+if self.app.settings.geometry.remember(ctx) {
+    self.app.mark_settings_dirty();
+}
+```
+
+`window::Geometry` is the inner size, the position and whether the window
+was maximized, as plain fields the app stores in its own settings format.
+Applying it to the builder opens the window in place, maximized when it was,
+instead of resizing and moving it after it appears. `remember` returns
+whether anything changed by more than half a pixel, so the app saves only
+then.
+
+- Sizes and positions are logical pixels (points at zoom 1), so a window
+  saved while the app is zoomed opens at the same size on screen. The
+  builder is scaled by the new context's zoom, which is 1 unless eframe
+  restores egui's saved memory (whose options carry the zoom): keep the zoom
+  in the app's settings, set it once the window exists, and leave
+  `persist_egui_memory` off, as ZapFast does.
+- A maximized window keeps the normal size and position behind it, to
+  restore to. A minimized or full-screen window is not remembered.
+- Wayland never reveals a position: the size is remembered and the last
+  known position kept (or none, so the compositor places the window).
+- egui reads macOS's maximized state only when the window is created
+  (emilk/egui#3494), so there a window zoomed to fill the screen is
+  remembered at that size and the flag is left alone.
+- Values from a corrupt file (not finite, sizes above 16384, positions
+  beyond 32768) are ignored. On macOS, a position whose title bar would be
+  on no connected screen is dropped before the window is made there.
+
 ## Off-screen windows
 
 ```rust
@@ -88,10 +146,32 @@ fn logic(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
 On a window's first frame, this moves a window that no connected monitor
 shows (displays rearranged, or a secondary one late after a restart) to the
 middle of the primary monitor (ZapFast #171). Any overlap with any monitor
-counts as visible. Nothing happens on Wayland (no global positions), on
-macOS (which keeps windows on screen itself), or for a minimized window.
+counts as visible. On macOS, which creates a borderless window wherever it
+is told, the window's title bar must be on a screen's visible area (clear of
+the menu bar and the Dock), checked against AppKit's screens because winit's
+macOS monitor positions mix scale factors (Spotifast #719). Nothing happens
+on Wayland (no global positions) or for a minimized window.
 `window::recovered_position` is the pure decision, for apps that check a
 saved position themselves.
+
+## Bringing the window forward
+
+```rust
+} else if self.wayland && fastframe_shell::window::raise_on_compositor() {
+    // The compositor focused the window where it is.
+} else if self.wayland {
+    // Close the window and let the shell open a new one.
+}
+```
+
+Wayland drops a client's request to focus its own window, so apps close the
+window and open a new one, which lands on the current workspace instead of
+taking the user to the window. Under niri (`NIRI_SOCKET` set),
+`raise_on_compositor` asks `niri msg` to focus this process's window, which
+also switches to its workspace (ZapFast #474). It returns `false` elsewhere,
+or when `niri` is missing or fails, so the app keeps its fallback. Hyprland
+is not asked: `hyprctl dispatch` changed to Lua syntax in 0.56, so one
+request does not work across versions.
 
 ## Not here: single instance
 
