@@ -48,9 +48,11 @@ use egui::{Pos2, Rect};
 
 mod geometry;
 mod raise;
+mod zoom;
 
 pub use geometry::Geometry;
 pub use raise::raise_on_compositor;
+pub use zoom::keep_zoom;
 
 /// Where to move a window that no connected monitor shows, in physical
 /// virtual-desktop pixels, or `None` to leave it where it is.

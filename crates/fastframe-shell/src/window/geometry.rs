@@ -105,8 +105,9 @@ impl Geometry {
     ///
     /// egui-winit scales these by the new context's zoom factor. That is 1
     /// unless eframe restores egui's saved memory, whose options carry the
-    /// zoom. Keep the zoom in the app's settings and set it once the window
-    /// exists, with `eframe::App::persist_egui_memory` off, as ZapFast does.
+    /// zoom. Keep the zoom in the app's settings, give it to each window with
+    /// [`keep_zoom`](super::keep_zoom), and leave
+    /// `eframe::App::persist_egui_memory` off.
     #[must_use]
     pub fn apply(self, builder: egui::ViewportBuilder) -> egui::ViewportBuilder {
         self.apply_on(builder, super::visible_screens().as_deref())

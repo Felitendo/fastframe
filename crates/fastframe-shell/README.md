@@ -120,8 +120,8 @@ then.
   saved while the app is zoomed opens at the same size on screen. The
   builder is scaled by the new context's zoom, which is 1 unless eframe
   restores egui's saved memory (whose options carry the zoom): keep the zoom
-  in the app's settings, set it once the window exists, and leave
-  `persist_egui_memory` off, as ZapFast does.
+  in the app's settings, give it to each window with `window::keep_zoom`
+  (below), and leave `persist_egui_memory` off.
 - A maximized window keeps the normal size and position behind it, to
   restore to. A minimized or full-screen window is not remembered.
 - Wayland never reveals a position: the size is remembered and the last
@@ -132,6 +132,23 @@ then.
 - Values from a corrupt file (not finite, sizes above 16384, positions
   beyond 32768) are ignored. On macOS, a position whose title bar would be
   on no connected screen is dropped before the window is made there.
+
+### The zoom
+
+```rust
+// Every frame, in `logic`, for each window that follows the saved zoom:
+if let Some(zoom) = window::keep_zoom(ctx, self.app.settings.zoom) {
+    self.app.settings.zoom = zoom;
+    self.app.mark_settings_dirty();
+}
+```
+
+Every new window has a new egui context, which starts at zoom 1.
+`keep_zoom` gives it the saved zoom on its first call. After that it returns
+the zoom the user picked with Ctrl and plus or minus, for the app to save. A
+corrupt value (not a number, or outside egui's 0.2 to 5) is applied as the
+nearest usable zoom and returned to be saved. A window with a scale of its
+own, such as Spotifast's mini player, does not call it.
 
 ## Off-screen windows
 
