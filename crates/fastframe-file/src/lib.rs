@@ -7,6 +7,10 @@
 //! it over the target in one step, so a reader sees the old contents or the
 //! new ones, never part of either.
 //!
+//! Flushing to the disk can take tens of milliseconds, and far longer on a
+//! busy or network drive. Save from a worker thread, or after the frame,
+//! rather than in the middle of drawing one.
+//!
 //! ```no_run
 //! # fn main() -> std::io::Result<()> {
 //! let path = std::path::Path::new("/home/ada/.config/example/settings.json");
