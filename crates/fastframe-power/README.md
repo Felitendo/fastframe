@@ -73,6 +73,11 @@ leaves the decision to the app.
 | `Resumed` | logind | the resume callback | |
 | `EndingSession` | | `WM_ENDSESSION` | |
 
+Windows' connectivity hint can report no internet behind a proxy that the
+app gets through anyway. Spotifast follows `online` on macOS only for that
+reason. Treat `false` as a reason to wait or retry less often, never as a
+reason to stop trying.
+
 What a platform does not report keeps its default, which is the
 unconstrained case: online, not metered, no saver, on mains power, display
 on, unlocked. An app that holds something back on a condition never holds

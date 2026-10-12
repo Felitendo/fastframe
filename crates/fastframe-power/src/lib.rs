@@ -72,6 +72,11 @@ pub struct Conditions {
     /// (Windows).
     pub locked: bool,
     /// The system reports a way to the internet (Windows and macOS).
+    ///
+    /// On Windows this is the connectivity hint, which can say there is no
+    /// internet behind a proxy or a captive network that the app reaches
+    /// anyway. Use it to wait, never to give up: an app that stops
+    /// reconnecting while it is `false` can stay offline there for good.
     pub online: bool,
     /// The connection is metered or charged by use, roaming, or over its
     /// data limit (Windows).
