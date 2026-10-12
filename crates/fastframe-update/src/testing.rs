@@ -154,6 +154,8 @@ pub(crate) struct FakeHost {
     waited: Mutex<Vec<u32>>,
     installer_fails: bool,
     installers: Mutex<Vec<(PathBuf, Vec<String>)>>,
+    msiexec_exit: Option<i32>,
+    msiexec: Mutex<Vec<String>>,
     repointed: Mutex<Vec<Repointed>>,
     bundles: HashMap<PathBuf, BundleInfo>,
     any_bundle: Option<BundleInfo>,
@@ -178,6 +180,8 @@ impl Default for FakeHost {
             waited: Mutex::default(),
             installer_fails: false,
             installers: Mutex::default(),
+            msiexec_exit: Some(0),
+            msiexec: Mutex::default(),
             repointed: Mutex::default(),
             bundles: HashMap::new(),
             any_bundle: None,
@@ -243,6 +247,16 @@ impl FakeHost {
 
     pub(crate) fn installers(&self) -> Vec<(PathBuf, Vec<String>)> {
         lock(&self.installers).clone()
+    }
+
+    pub(crate) fn msiexec_exits_with(mut self, code: Option<i32>) -> Self {
+        self.msiexec_exit = code;
+        self
+    }
+
+    /// The `msiexec` command lines run.
+    pub(crate) fn msiexec_runs(&self) -> Vec<String> {
+        lock(&self.msiexec).clone()
     }
 
     pub(crate) fn repointed_shortcuts(&self) -> Vec<Repointed> {
@@ -394,6 +408,11 @@ impl Host for FakeHost {
     fn run_installer(&self, installer: &Path, arguments: &[String]) -> Result<bool> {
         lock(&self.installers).push((installer.to_owned(), arguments.to_vec()));
         Ok(!self.installer_fails)
+    }
+
+    fn run_msiexec(&self, command_line: &str) -> Result<Option<i32>> {
+        lock(&self.msiexec).push(command_line.to_owned());
+        Ok(self.msiexec_exit)
     }
 
     fn repoint_windows_shortcuts(&self, folders: &[PathBuf], old: &Path, new: &Path) -> Result<()> {

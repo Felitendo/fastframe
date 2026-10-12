@@ -231,6 +231,28 @@ fn the_new_app_acknowledges_an_old_windows_installer_receipt() {
     crate::helper::acknowledge(&config, &host, &job).unwrap();
 }
 
+/// An update through a Windows Installer package writes the same job as
+/// one through the setup program, with the package as its payload.
+#[cfg(windows)]
+#[test]
+fn the_new_app_acknowledges_a_windows_installer_package_receipt() {
+    let root = tempfile::tempdir().unwrap();
+    let root = root.path().canonicalize().unwrap();
+    let job = install(
+        &FIXTURES[1].1.replace("-setup.exe", ".msi"),
+        r"\\\\?\\C:\\Users\\user\\AppData\\Local\\Programs\\ZapFast",
+        &root,
+        "zapfast.exe",
+        "zapfast-v0.17.0-x86_64-pc-windows-msvc.msi",
+    );
+    let host = FakeHost::default().with_current_exe(&root.join("zapfast.exe"));
+    let config = UpdateConfig {
+        current_version: "0.17.0",
+        ..ZAPFAST
+    };
+    crate::helper::acknowledge(&config, &host, &job).unwrap();
+}
+
 #[test]
 fn macos_receipts_are_only_accepted_on_macos() {
     for (config, fixture, old_root, bundle, executable) in [

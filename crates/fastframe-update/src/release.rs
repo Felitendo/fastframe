@@ -134,7 +134,7 @@ pub(crate) struct Metadata {
     draft: bool,
     #[serde(default)]
     prerelease: bool,
-    assets: Vec<Asset>,
+    pub(crate) assets: Vec<Asset>,
 }
 
 #[derive(Deserialize)]
@@ -232,6 +232,13 @@ pub(crate) fn asset_name(stem: &str, kind: Kind, platform: Platform) -> String {
         Kind::Portable if platform == Platform::Windows => format!("{stem}.zip"),
         Kind::Portable => format!("{stem}.tar.gz"),
     }
+}
+
+/// The Windows Installer package a release publishes beside the setup
+/// program. A Windows installation updates through it when the release has
+/// one.
+pub(crate) fn msi_name(stem: &str) -> String {
+    format!("{stem}.msi")
 }
 
 /// The executable inside a portable archive, and its name once unpacked:
@@ -530,6 +537,10 @@ mod tests {
         assert_eq!(
             asset_name(&stem, Kind::WindowsInstaller, Platform::Windows),
             "zapfast-v0.17.0-aarch64-pc-windows-msvc-setup.exe"
+        );
+        assert_eq!(
+            msi_name(&stem),
+            "zapfast-v0.17.0-aarch64-pc-windows-msvc.msi"
         );
         let stem = super::stem(
             &ZAPFAST,

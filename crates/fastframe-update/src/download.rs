@@ -58,7 +58,15 @@ pub(crate) fn download(
     let target = release::target(platform, arch, config.mac_target)?;
     let metadata = release::metadata(config, transport, source, &release.version)?;
     let stem = release::stem(config, &release.version, target);
-    let name = release::asset_name(&stem, installation.kind, platform);
+    let mut name = release::asset_name(&stem, installation.kind, platform);
+    // A release that ships a Windows Installer package installs through it;
+    // older releases only have the setup program.
+    if installation.kind == Kind::WindowsInstaller {
+        let msi = release::msi_name(&stem);
+        if metadata.assets.iter().any(|asset| asset.name == msi) {
+            name = msi;
+        }
+    }
     let package = metadata.asset(&name)?;
     let checksums = metadata.asset("checksums.txt")?;
     let signature = key
@@ -247,6 +255,9 @@ mod tests {
         prerelease: bool,
         arch: &'static str,
         mac_target: crate::MacTarget,
+        /// The release has a Windows Installer package beside the setup
+        /// program, and the package is the one served.
+        msi: bool,
     }
 
     impl Default for Fixture {
@@ -263,6 +274,7 @@ mod tests {
                 prerelease: false,
                 arch: "x86_64",
                 mac_target: crate::MacTarget::Universal,
+                msi: false,
             }
         }
     }
@@ -274,11 +286,12 @@ mod tests {
     impl Fixture {
         fn name(&self) -> String {
             let target = release::target(self.platform, self.arch, self.mac_target).unwrap();
-            release::asset_name(
-                &release::stem(&ZAPFAST, self.version, target),
-                self.kind,
-                self.platform,
-            )
+            let stem = release::stem(&ZAPFAST, self.version, target);
+            if self.msi {
+                release::msi_name(&stem)
+            } else {
+                release::asset_name(&stem, self.kind, self.platform)
+            }
         }
 
         fn transport(&self) -> FakeTransport {
@@ -301,6 +314,11 @@ mod tests {
                 serde_json::json!({"name": name, "size": self.published_size.unwrap_or(self.package.len()), "browser_download_url": asset_url(&name)}),
                 serde_json::json!({"name": "checksums.txt", "size": manifest.len(), "browser_download_url": asset_url("checksums.txt")}),
             ];
+            if self.msi {
+                // The setup program the same release still ships.
+                let setup = name.replace(".msi", "-setup.exe");
+                assets.push(serde_json::json!({"name": setup, "size": 1, "browser_download_url": asset_url(&setup)}));
+            }
             if self.signature {
                 assets.push(serde_json::json!({"name": "checksums.txt.sig", "size": 64, "browser_download_url": asset_url("checksums.txt.sig")}));
             }
@@ -689,6 +707,50 @@ mod tests {
             b"setup program"
         );
         assert!(host.version_probes().is_empty());
+    }
+
+    /// From the release that ships both, a Windows installation updates
+    /// through the Windows Installer package, verified the same way.
+    #[test]
+    fn a_windows_installer_package_is_preferred_to_the_setup_program() {
+        let directory = tempfile::tempdir().unwrap();
+        let executable = directory.path().join("zapfast.exe");
+        fs::write(&executable, b"the running app").unwrap();
+        let fixture = Fixture {
+            kind: Kind::WindowsInstaller,
+            platform: Platform::Windows,
+            package: b"windows installer package".to_vec(),
+            msi: true,
+            ..Fixture::default()
+        };
+        let installation = Installation {
+            executable,
+            kind: Kind::WindowsInstaller,
+        };
+        let prepared = run(
+            &fixture,
+            &config(),
+            &FakeHost::default(),
+            installation.clone(),
+        )
+        .unwrap();
+        assert!(
+            prepared
+                .staged
+                .payload
+                .ends_with("zapfast-v0.17.0-x86_64-pc-windows-msvc.msi")
+        );
+        assert_eq!(
+            fs::read(&prepared.staged.payload).unwrap(),
+            b"windows installer package"
+        );
+        prepared.discard();
+        // The package's checksum is checked like any other.
+        let fixture = Fixture {
+            listed_digest: Some("0".repeat(64)),
+            ..fixture
+        };
+        assert!(run(&fixture, &config(), &FakeHost::default(), installation).is_err());
     }
 
     #[test]

@@ -236,11 +236,21 @@ fn replace(config: &UpdateConfig, host: &dyn Host, staged: &Staged) -> Result<Pa
         Kind::WindowsInstaller => {
             stage::backup_current(target, &backup).context("Cannot back up the current app")?;
             let directory = target.parent().context("Missing installation directory")?;
-            ensure!(
+            let log = staged.file(INSTALLER_LOG);
+            let installed = if stage::is_msi(&staged.payload) {
+                stage::msi_succeeded(host.run_msiexec(&stage::msi_command_line(
+                    &staged.payload,
+                    directory,
+                    &log,
+                ))?)
+            } else {
                 host.run_installer(
                     &staged.payload,
-                    &stage::installer_arguments(directory, &staged.file(INSTALLER_LOG)),
-                )?,
+                    &stage::installer_arguments(directory, &log),
+                )?
+            };
+            ensure!(
+                installed,
                 "The installer failed. See the update installer log."
             );
             // An app still running under a legacy name comes back under its
@@ -624,6 +634,70 @@ mod tests {
             fs::read(&staged.installation.executable).unwrap(),
             b"old executable"
         );
+    }
+
+    /// A release with a Windows Installer package: `msiexec` installs it
+    /// silently into the same folder, and a failed install, or a start that
+    /// never comes, restores the previous app.
+    #[test]
+    fn a_windows_installer_package_runs_through_msiexec() {
+        fn msi(root: &Path) -> Staged {
+            let mut staged = staged(root);
+            staged.installation.kind = Kind::WindowsInstaller;
+            let payload = staged.file("zapfast-v0.17.0-x86_64-pc-windows-msvc.msi");
+            fs::rename(&staged.payload, &payload).unwrap();
+            staged.payload = payload;
+            staged
+        }
+        for code in [Some(0), Some(3010)] {
+            let root = tempfile::tempdir().unwrap();
+            let staged = msi(root.path());
+            let job = write_job(&staged);
+            let host = FakeHost::default()
+                .on_spawn(Behaviour::Acknowledge)
+                .msiexec_exits_with(code);
+            run(&ZAPFAST, &host, &job).unwrap();
+            assert!(host.installers().is_empty(), "no setup program");
+            let directory = root.path().canonicalize().unwrap();
+            assert_eq!(
+                host.msiexec_runs(),
+                [stage::msi_command_line(
+                    &staged.payload,
+                    &directory,
+                    &staged.file(INSTALLER_LOG)
+                )]
+            );
+            assert_eq!(fs::read(staged.file(PREVIOUS)).unwrap(), b"old executable");
+            assert_eq!(
+                fs::read_to_string(staged.file(RESULT)).unwrap(),
+                "Updated to 0.17.0"
+            );
+        }
+        for (code, behaviour) in [
+            (Some(1603), Behaviour::Acknowledge),
+            (None, Behaviour::Acknowledge),
+            (Some(0), Behaviour::Exit(false)),
+        ] {
+            let root = tempfile::tempdir().unwrap();
+            let staged = msi(root.path());
+            let job = write_job(&staged);
+            let host = FakeHost::default()
+                .on_spawn(behaviour)
+                .msiexec_exits_with(code);
+            assert!(run(&ZAPFAST, &host, &job).is_err(), "{code:?}");
+            assert_eq!(
+                fs::read(&staged.installation.executable).unwrap(),
+                b"old executable"
+            );
+            let spawned = host.spawned();
+            assert!(
+                spawned
+                    .last()
+                    .unwrap()
+                    .arguments
+                    .contains(&OsString::from("--update-error"))
+            );
+        }
     }
 
     /// Spotifast #582: an installation still running as `fastpotify.exe`

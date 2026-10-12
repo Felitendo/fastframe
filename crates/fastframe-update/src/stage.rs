@@ -295,6 +295,40 @@ pub(crate) fn installer_arguments(installation: &Path, log: &Path) -> Vec<String
     ]
 }
 
+/// Whether `package` is a Windows Installer package rather than a setup
+/// program.
+pub(crate) fn is_msi(package: &Path) -> bool {
+    package
+        .extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("msi"))
+}
+
+/// The `msiexec` command line for a silent per-user install of `package`
+/// into `installation`, the folder the app runs from, logging to `log`.
+/// `INSTALLFOLDER` is the package's installation folder, so an app that was
+/// moved, or installed elsewhere by its setup program, is updated where it
+/// is. Paths are quoted as `msiexec` reads them: a property's value inside
+/// the quotes, and no `\\?\` prefix. Windows paths cannot contain `"`.
+pub(crate) fn msi_command_line(package: &Path, installation: &Path, log: &Path) -> String {
+    let folder = installer_path(installation);
+    // A quote after a backslash would read as escaped.
+    let folder = match folder.trim_end_matches('\\') {
+        trimmed if trimmed.ends_with(':') => format!("{trimmed}\\."),
+        trimmed => trimmed.to_owned(),
+    };
+    format!(
+        r#"/i "{}" /qn /norestart /l*v "{}" INSTALLFOLDER="{folder}""#,
+        installer_path(package),
+        installer_path(log),
+    )
+}
+
+/// Whether `msiexec` installed the package: 0, or 3010 when Windows wants a
+/// restart to finish replacing a file in use (`/norestart` defers it).
+pub(crate) fn msi_succeeded(code: Option<i32>) -> bool {
+    matches!(code, Some(0 | 3010))
+}
+
 impl Staged {
     pub(crate) fn file(&self, name: &str) -> PathBuf {
         self.directory.join(name)
@@ -479,6 +513,44 @@ mod tests {
                 r"/LOG=C:\Apps\.zapfast-update-0\installer.log",
             ]
         );
+    }
+
+    #[test]
+    fn msiexec_installs_silently_into_the_running_apps_folder() {
+        assert_eq!(
+            msi_command_line(
+                Path::new(
+                    r"\\?\C:\Apps\.zapfast-update-0\zapfast-v0.17.0-x86_64-pc-windows-msvc.msi"
+                ),
+                Path::new(r"\\?\C:\Users\Ada Lovelace\AppData\Local\Programs\ZapFast"),
+                Path::new(r"\\?\C:\Apps\.zapfast-update-0\installer.log"),
+            ),
+            r#"/i "C:\Apps\.zapfast-update-0\zapfast-v0.17.0-x86_64-pc-windows-msvc.msi" /qn /norestart /l*v "C:\Apps\.zapfast-update-0\installer.log" INSTALLFOLDER="C:\Users\Ada Lovelace\AppData\Local\Programs\ZapFast""#
+        );
+        // No backslash before a closing quote, even at a drive's root.
+        let line = msi_command_line(
+            Path::new(r"D:\x.msi"),
+            Path::new(r"D:\"),
+            Path::new(r"D:\l"),
+        );
+        assert!(line.ends_with(r#"INSTALLFOLDER="D:\.""#), "{line}");
+        assert!(is_msi(Path::new(
+            "zapfast-v0.17.0-x86_64-pc-windows-msvc.msi"
+        )));
+        assert!(is_msi(Path::new("ZAPFAST.MSI")));
+        assert!(!is_msi(Path::new(
+            "zapfast-v0.17.0-x86_64-pc-windows-msvc-setup.exe"
+        )));
+    }
+
+    #[test]
+    fn msiexec_succeeds_with_or_without_a_pending_restart() {
+        assert!(msi_succeeded(Some(0)));
+        assert!(msi_succeeded(Some(3010)));
+        // 1602 cancelled, 1603 failed, 1618 another install running.
+        for code in [Some(1), Some(1602), Some(1603), Some(1618), None] {
+            assert!(!msi_succeeded(code), "{code:?}");
+        }
     }
 
     #[test]

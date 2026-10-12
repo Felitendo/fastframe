@@ -72,6 +72,9 @@ pub(crate) trait Host: Send + Sync {
     fn wait_for_parent(&self, parent: u32, ready: &Path) -> Result<()>;
     /// Runs an installer to completion; whether it succeeded.
     fn run_installer(&self, installer: &Path, arguments: &[String]) -> Result<bool>;
+    /// Windows: runs `msiexec` from the system folder with `command_line`
+    /// as written, to completion; its exit code.
+    fn run_msiexec(&self, command_line: &str) -> Result<Option<i32>>;
     /// Windows: points the `.lnk` shortcuts in `folders` and below whose
     /// target is `old` at `new`.
     fn repoint_windows_shortcuts(&self, folders: &[PathBuf], old: &Path, new: &Path) -> Result<()>;
@@ -262,6 +265,27 @@ mod os {
             command.args(arguments);
             hidden(&mut command);
             Ok(command.status()?.success())
+        }
+
+        fn run_msiexec(&self, command_line: &str) -> Result<Option<i32>> {
+            #[cfg(windows)]
+            {
+                use std::os::windows::process::CommandExt;
+                // From the system folder, never one found on the search path.
+                let system = std::env::var_os("SystemRoot").context("SystemRoot is not set")?;
+                let mut command =
+                    Command::new(Path::new(&system).join("System32").join("msiexec.exe"));
+                // msiexec parses its own command line: `PROPERTY="value"`
+                // does not survive the quoting `args` applies.
+                command.raw_arg(command_line);
+                hidden(&mut command);
+                Ok(command.status()?.code())
+            }
+            #[cfg(not(windows))]
+            {
+                let _ = command_line;
+                bail!("Windows Installer packages install only on Windows")
+            }
         }
 
         fn repoint_windows_shortcuts(

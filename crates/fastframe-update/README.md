@@ -97,11 +97,45 @@ would report fastframe's version, so the app passes its own.
    bundle on macOS), writes `handoff.json` and starts the helper with
    `--apply-update`. It returns once the helper writes `ready`.
 5. The helper waits for the app to exit, keeps a backup called `previous`,
-   replaces the executable (portable), runs the setup program silently
-   (Windows installer) or swaps the bundle (macOS), and relaunches the app
+   replaces the executable (portable), runs the installer silently
+   (Windows installer, below) or swaps the bundle (macOS), and relaunches the app
    with `--update-receipt`. The new app acknowledges by writing `started`.
    A failure at any step, or no `started` within a minute, restores
    `previous` and restarts the old app with `--update-error`.
+
+## Windows Installer packages
+
+A Windows installation updates through `<slug>-v<version>-<target>.msi`
+when the release has one, and through `-setup.exe` (Inno Setup) when it
+does not. The package is verified against the signed checksums like any
+other asset. The helper runs
+
+```text
+%SystemRoot%\System32\msiexec.exe /i "<package>" /qn /norestart /l*v "<staging folder>\installer.log" INSTALLFOLDER="<folder the app runs from>"
+```
+
+and counts exit codes 0 and 3010 (a restart is due) as installed. Anything
+else rolls back as a failed setup program does. Everything around it is
+unchanged: the helper waits for the app to exit, keeps `previous`, and
+relaunches the app for its receipt.
+
+What the app's package must do:
+
+- Install per user, so no elevation is asked for, with its folder's
+  directory ID `INSTALLFOLDER`: the updater installs into the folder the
+  app runs from, wherever that is.
+- Install the `<slug>-installer.txt` marker beside the executable, as the
+  setup program does. Detection treats both the same.
+- Take over a copy that its Inno Setup program installed, so the first
+  update to the package (and a package run by hand over an Inno install)
+  ends with one installation: Inno's uninstall entry gone, the package's
+  present, settings and data kept. The updater does not run Inno's
+  uninstaller.
+
+An app moves over in two releases. The first ships both the setup program
+and the package: older versions only know `-setup.exe` and update to it,
+and that release's updater prefers the package. Releases after it can ship
+the package alone.
 
 ## Pre-releases
 
@@ -204,7 +238,7 @@ installs reads the receipt. These must not change without a transition:
 | Files in it | `handoff.json`, `ready`, `started`, `result.txt`, `previous`, `helper`/`helper.exe`/`helper.app`, `helper.log`, `installer.log`, `mounted-<hex>`, `failed.app` |
 | `handoff.json` | compact JSON: `{"prepared":{"installation":{"executable":…,"kind":"Portable"\|"WindowsInstaller"\|"MacBundle"},"directory":…,"payload":…,"sha256":…,"version":…},"parent":<pid>,"arguments":[…]}` |
 | Markers | `<name>-portable.txt` containing `<name>-portable-v1`; `<name>-installer.txt` containing `<name>-installer-v1` |
-| Assets | `<slug>-v<version>-<target>.tar.gz` (Linux), `.zip` (Windows portable), `-setup.exe` (Windows installer), `<slug>-v<version>-macos-universal.dmg` (or `-macos-arm64.dmg` with `MacTarget::Arm64Only`); targets `x86_64`/`aarch64` `-unknown-linux-gnu` and `-pc-windows-msvc` |
+| Assets | `<slug>-v<version>-<target>.tar.gz` (Linux), `.zip` (Windows portable), `.msi` or else `-setup.exe` (Windows installer), `<slug>-v<version>-macos-universal.dmg` (or `-macos-arm64.dmg` with `MacTarget::Arm64Only`); targets `x86_64`/`aarch64` `-unknown-linux-gnu` and `-pc-windows-msvc` |
 | Archive layout | `<slug>-v<version>-<target>/<slug>[.exe]`, or `<portable_executable>[.exe]` in place of the second `<slug>` |
 | Checksums | `checksums.txt` in `sha256sum` format; `checksums.txt.sig` is a raw 64-byte Ed25519 signature over its exact bytes |
 | Version probe | `<slug or legacy name> <version>` on standard output |
@@ -252,7 +286,7 @@ bundle-sized copy in the staging folder.
 Linux, macOS and Windows. Detection rules for all three are pure functions
 over paths, marker files and an injected view of the environment, so their
 tests run everywhere. Programs (`tar`, `dpkg-query`, `rpm`, `pacman`,
-PlistBuddy, `codesign`, `spctl`, `hdiutil`, `ditto`, the Windows setup
+PlistBuddy, `codesign`, `spctl`, `hdiutil`, `ditto`, `msiexec`, the Windows setup
 program) and processes are reached through one internal trait that the tests
 replace; the tests never spawn a process or use the network.
 

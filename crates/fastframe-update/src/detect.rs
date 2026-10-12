@@ -15,9 +15,10 @@ pub enum Kind {
     /// An executable unpacked from the `.tar.gz` (Linux) or `.zip`
     /// (Windows) download, next to a `<slug>-portable.txt` marker.
     Portable,
-    /// Installed by the Windows setup program, which left a
-    /// `<slug>-installer.txt` marker. Updated by running the new setup
-    /// program silently.
+    /// Installed by the Windows setup program or Windows Installer
+    /// package, which left a `<slug>-installer.txt` marker. Updated by
+    /// installing the release's package silently, or its setup program
+    /// when it has no package.
     WindowsInstaller,
     /// A macOS app bundle from the disk image, outside Homebrew.
     MacBundle,
