@@ -24,7 +24,7 @@ let buttons = fastframe_desktop::setting("org.gnome.desktop.wm.preferences", "bu
 `setting` asks `org.freedesktop.portal.Settings` on the session bus, which
 works inside a Flatpak, where running `gsettings` does not, and starts no
 process. It returns `None` off Linux, without a portal, or for a key the
-portal does not serve, and gives up after about a second. GNOME's portal and
+portal does not serve, and gives up after half a second. GNOME's portal and
 the GTK one (used by Hyprland, Sway and others) serve GNOME's schemas: the
 interface, window-manager and peripheral settings among them.
 

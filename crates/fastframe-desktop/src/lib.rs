@@ -53,7 +53,7 @@ fn names_gnome(desktops: Option<&str>) -> bool {
 /// desktop portal's Settings interface.
 ///
 /// `None` off Linux, without a session bus or a portal, or when the portal
-/// does not have the key. The call gives up after about a second, so a portal
+/// does not have the key. The call gives up after half a second, so a portal
 /// that is still starting cannot hold the app up for long. GNOME's portal and
 /// the GTK one serve GNOME's own schemas, and other desktops' portals serve
 /// what they choose.
@@ -80,7 +80,7 @@ mod portal {
     pub(crate) fn read_string(namespace: &str, key: &str) -> Option<String> {
         let connection = connection::Builder::session()
             .ok()?
-            .method_timeout(Duration::from_secs(1))
+            .method_timeout(Duration::from_millis(500))
             .build()
             .ok()?;
         let proxy = Proxy::new(
