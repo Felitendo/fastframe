@@ -1388,6 +1388,7 @@ dependencies = [
  "objc2-app-kit 0.3.2",
  "objc2-foundation 0.3.2",
  "serde_json",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]

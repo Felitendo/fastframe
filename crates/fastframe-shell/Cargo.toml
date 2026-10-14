@@ -36,9 +36,31 @@ objc2.workspace = true
 objc2-app-kit = { workspace = true, features = ["NSScreen"] }
 objc2-foundation = { workspace = true, features = ["NSArray", "NSEnumerator", "NSGeometry"] }
 
+[target.'cfg(windows)'.dependencies]
+# The headless sleep waits on the thread's messages as well as the waker:
+# winit's event-target window (visible, 0x0, layered) lives on this thread
+# for the whole run, and Windows calls a thread that leaves it unanswered
+# for five seconds hung (IsHungAppWindow, Process.Responding). Already in
+# every app's tree.
+windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Security", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging"] }
+
 [dev-dependencies]
 # The niri parser's tests run on every platform.
 serde_json.workspace = true
 
-[lints]
-workspace = true
+# The workspace's lints with `unsafe_code` lowered to `deny`, allowed only in
+# the module that talks to the OS (`windows.rs`), each block with a SAFETY
+# note.
+[lints.rust]
+unsafe_code = "deny"
+missing_docs = "warn"
+unreachable_pub = "warn"
+rust_2018_idioms = { level = "warn", priority = -1 }
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+dbg_macro = "warn"
+todo = "warn"
+unwrap_used = "warn"
+print_stdout = "warn"
+print_stderr = "warn"

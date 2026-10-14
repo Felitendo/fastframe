@@ -99,6 +99,8 @@ use std::time::{Duration, Instant};
 
 mod stall;
 pub mod window;
+#[cfg(windows)]
+mod windows;
 
 pub use stall::StallWatch;
 
@@ -207,7 +209,8 @@ impl<A: Resident> Shell<A> {
     /// an app with a tray passes `fastframe_tray::idle` here. `idle` cannot be
     /// cut short, so a wake is seen at the next [`HEADLESS_TICK`]. Elsewhere
     /// nothing needs the main thread while it waits: leave this unset and the
-    /// shell sleeps until the [`Waker`] wakes it.
+    /// shell sleeps until the [`Waker`] wakes it, answering the thread's
+    /// window messages meanwhile on Windows, so the app never looks hung.
     pub fn idle(mut self, idle: fn(Duration)) -> Self {
         self.idle = Some(idle);
         self
@@ -408,6 +411,9 @@ pub struct Waker {
 struct Alarm {
     woken: Mutex<bool>,
     ring: Condvar,
+    /// What the Windows sleep waits on alongside the thread's messages.
+    #[cfg(windows)]
+    event: windows::Event,
 }
 
 impl std::fmt::Debug for Waker {
@@ -438,10 +444,38 @@ impl Waker {
         }
         *lock(&self.headless.woken) = true;
         self.headless.ring.notify_all();
+        #[cfg(windows)]
+        self.headless.event.set();
     }
 
     /// Sleeps until [`wake`](Self::wake) is called or `timeout` passes, and
     /// clears the wake.
+    ///
+    /// On Windows it answers the thread's messages meanwhile: winit keeps a
+    /// visible event-target window on this thread between windows, and a
+    /// thread that leaves its windows' messages for five seconds is hung to
+    /// Windows (`IsHungAppWindow`, `Process.Responding`, the "not
+    /// responding" ghost). winit buffers what reaches that window until the
+    /// next window's loop runs.
+    #[cfg(windows)]
+    fn sleep(&self, timeout: Duration) {
+        // Counts down from the start: `timeout` may be `Duration::MAX`.
+        let started = Instant::now();
+        loop {
+            if self.take_woken() {
+                return;
+            }
+            let left = timeout.saturating_sub(started.elapsed());
+            if left.is_zero() {
+                return;
+            }
+            self.headless.event.wait_pumping(left);
+        }
+    }
+
+    /// Sleeps until [`wake`](Self::wake) is called or `timeout` passes, and
+    /// clears the wake.
+    #[cfg(not(windows))]
     fn sleep(&self, timeout: Duration) {
         let woken = lock(&self.headless.woken);
         let (mut woken, _) = self

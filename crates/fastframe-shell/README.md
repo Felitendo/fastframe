@@ -69,7 +69,11 @@ window's options, such as which kind of window it is.
 - Headless ticks run every 150 ms (`HEADLESS_TICK`) for `Headless::Wait`, or
   after the app's own `Headless::WaitFor(duration)` when nothing is due
   sooner, and at once when the `Waker` wakes. Without `.idle` the shell
-  sleeps on the waker in between. On macOS pass `fastframe_tray::idle`,
+  sleeps on the waker in between. On Windows that sleep also answers the
+  main thread's window messages: winit keeps a visible event-target window
+  there between windows, and Windows calls a thread that leaves it
+  unanswered for five seconds hung ("not responding", `Process.Responding`
+  false) for as long as the app sits in the tray. On macOS pass `fastframe_tray::idle`,
   which runs AppKit's loop so the menu-bar item keeps answering; it runs in
   ticks, so there a wake is seen at the next one.
 - If `run_native` fails, `run` returns the error and the app is dropped
