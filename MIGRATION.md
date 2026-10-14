@@ -31,9 +31,9 @@ section below has a subsection per app with the details.
 
 | App | Adopts | Not now |
 | --- | --- | --- |
-| ZapFast | [text](#fastframe-text), [fonts](#fastframe-fonts) (with the system's face), [emoji](#fastframe-emoji), [icons](#fastframe-icons), [theme](#fastframe-theme), [i18n](#fastframe-i18n), [log](#fastframe-log), [tray](#fastframe-tray), [shell](#fastframe-shell), [macos](#fastframe-macos), [update](#fastframe-update) | |
-| Spotifast | [text](#fastframe-text), [fonts](#fastframe-fonts), [icons](#fastframe-icons), [theme](#fastframe-theme), [i18n](#fastframe-i18n), [log](#fastframe-log), [tray](#fastframe-tray), [shell](#fastframe-shell), [macos](#fastframe-macos) (the double-click setting only), [update](#fastframe-update) | [emoji](#fastframe-emoji) until it lays out colour emoji (it keeps Inter and its monochrome face for now) |
-| Solco | [text](#fastframe-text), [fonts](#fastframe-fonts), [icons](#fastframe-icons), [macos](#fastframe-macos) (done in b5985bb); [update](#fastframe-update) (with the pre-release channel); [log](#fastframe-log) (only the facade-free redaction and panic line, with `default-features = false`) later | [theme](#fastframe-theme) and [i18n](#fastframe-i18n) until it adds custom themes or translations; [shell](#fastframe-shell) (no tray or background mode); its `tracing` logger stays |
+| ZapFast | [text](#fastframe-text), [fonts](#fastframe-fonts) (with the system's face), [emoji](#fastframe-emoji), [icons](#fastframe-icons), [theme](#fastframe-theme), [i18n](#fastframe-i18n), [log](#fastframe-log), [tray](#fastframe-tray), [shell](#fastframe-shell), [titlebar](#fastframe-titlebar), [update](#fastframe-update) | |
+| Spotifast | [text](#fastframe-text), [fonts](#fastframe-fonts), [icons](#fastframe-icons), [theme](#fastframe-theme), [i18n](#fastframe-i18n), [log](#fastframe-log), [tray](#fastframe-tray), [shell](#fastframe-shell), [titlebar](#fastframe-titlebar), [update](#fastframe-update) | [emoji](#fastframe-emoji) until it lays out colour emoji (it keeps Inter and its monochrome face for now) |
+| Solco | [text](#fastframe-text), [fonts](#fastframe-fonts), [icons](#fastframe-icons), [titlebar](#fastframe-titlebar) (macOS only); [update](#fastframe-update) (with the pre-release channel); [log](#fastframe-log) (only the facade-free redaction and panic line, with `default-features = false`) later | [theme](#fastframe-theme) and [i18n](#fastframe-i18n) until it adds custom themes or translations; [shell](#fastframe-shell) (no tray or background mode); its `tracing` logger stays |
 | TonePush | [text](#fastframe-text), [fonts](#fastframe-fonts), [update](#fastframe-update) (with `portable_executable`) | [icons](#fastframe-icons) later (its own macros and layout); [log](#fastframe-log) (it uses `eprintln!`); [shell](#fastframe-shell); [theme](#fastframe-theme) and [i18n](#fastframe-i18n) until it adds custom themes or translations |
 | Chat with Work Local Agent | [text](#fastframe-text) | [fonts](#fastframe-fonts) (it draws with the platform's UI font); [tray](#fastframe-tray) and [shell](#fastframe-shell) (one winit loop with `pump_app_events`, tray-icon 0.25); [log](#fastframe-log) until it wants a log file; [theme](#fastframe-theme) and [i18n](#fastframe-i18n) until it adds custom themes or translations |
 
@@ -634,47 +634,64 @@ Not moving: Solco and TonePush have no tray or background mode. Chat
 with Work keeps its window alive with `pump_app_events` on one winit loop, a
 different design.
 
-## fastframe-macos
+## fastframe-titlebar
 
-Traffic lights in the app's own title bar, the inset that clears them, and
-the title-bar double-click setting. Each app keeps its header heights, its
-double-click handling (which viewport command or AppKit selector it sends),
-and its application menus.
+The title bar an app draws itself, and what was `fastframe-macos` (removed
+in favour of this crate). On macOS: the traffic lights centred in the app's
+header, their room, and a header drag that starts on the press and answers
+a double-click as System Settings says. On Windows and Linux, behind the
+user's choice: caption buttons, the header drag with double-click to
+maximize, and resizable edges. Each app keeps its header heights, which
+panel moves down when its header is too narrow, its setting, and its menus.
 
-### ZapFast
+Renamed from `fastframe-macos`:
 
-| Delete | Lines | Instead |
-| --- | --- | --- |
-| `src/macos.rs`: `update_window` | 55 | `fastframe_macos::align_traffic_lights(frame, ctx, if linked { 60.0 } else { 28.0 / ctx.zoom_factor() })` in `Shell::logic` (the `cfg` can go) |
-| `src/theme.rs` `traffic_light_inset`: the `84.0 / ctx.zoom_factor()` arm | 3 | `fastframe_macos::traffic_light_inset(ctx)` when not previewing; keep the `macos_chrome(ctx)` check for the demo's macOS preview on other platforms, using `fastframe_macos::TRAFFIC_LIGHTS_WIDTH / ctx.zoom_factor()` there |
-| `Cargo.toml`: `NSButton`, `NSControl`, `NSView`, `NSWindow` features of `objc2-app-kit` | 0 | still needed by the rest of `macos.rs`; leave them |
-
-About 55 lines. The menu code in `macos.rs` stays. No behaviour change.
-
-### Solco
-
-| Delete | Lines | Instead |
-| --- | --- | --- |
-| `src/ui/macos_chrome.rs` | 112 | `fastframe_macos` |
-| `src/ui.rs`: `macos_chrome::update(frame, ui.ctx(), TITLE_BAR_HEIGHT)` | 1 | `fastframe_macos::align_traffic_lights(frame, ui.ctx(), TITLE_BAR_HEIGHT)` |
-| `src/ui.rs` `title_bar_leading_inset`: the macOS arm | 5 | `fastframe_macos::traffic_light_inset(context)` (zero in full screen; keep the 12 fallback) |
-| `src/ui.rs` `title_bar_drag`: `macos_chrome::double_click_action()` and `DoubleClick` | 0 | `fastframe_macos::double_click_action()`, with `DoubleClick::Zoom \| DoubleClick::Fill` on the zoom arm |
-| `Cargo.toml`: the macOS `objc2-app-kit` 0.2 and `raw-window-handle` entries used only by `macos_chrome.rs` | 2 | come with the crate (objc2-app-kit 0.3, as ZapFast and Spotifast use) |
-
-About 115 lines. Differences: a double-click setting the crate does not know
-(a future macOS value) now does nothing, where Solco zoomed.
+| Was | Now |
+| --- | --- |
+| `fastframe_macos::align_traffic_lights(frame, ctx, height)` | `fastframe_titlebar::align_traffic_lights(frame, ctx, height)` |
+| `fastframe_macos::traffic_light_inset(ctx)` | `fastframe_titlebar::footprint(ctx, height).left` |
+| `fastframe_macos::TRAFFIC_LIGHTS_WIDTH` | `fastframe_titlebar::TRAFFIC_LIGHTS_WIDTH` |
+| `fastframe_macos::double_click_action()` and the app's own drag | `fastframe_titlebar::drag(ui, rect)` |
 
 ### Spotifast
 
-| Delete | Lines | Instead |
-| --- | --- | --- |
-| `src/window.rs`: `MacosDoubleClickAction`, `macos_double_click_action` and their test | 30 | `fastframe_macos::double_click_action()` inside `macos_titlebar_should_drag`: `Minimize` to `performMiniaturize:`, `Zoom` to `performZoom:`, `Fill` and `Nothing` ignored as now |
-| `src/window.rs`: the `NSUserDefaults` read | 3 | inside the crate |
+| Delete | Instead |
+| --- | --- |
+| `src/window.rs`: `WindowButton`, `LinuxWindowControls`, `LINUX_CONTROLS`, `LINUX_ICONS`, `init_linux_window_controls`, `linux_window_controls`, `parse_linux_controls` and its test | `fastframe_titlebar::init()`, `Button`, `Layout`, `layout()` |
+| `src/window.rs`: `CUSTOM_TITLEBAR`, `custom_titlebar`, `set_custom_titlebar`, `custom_titlebar_for` and its test | `fastframe_titlebar::set_enabled`, `enabled` |
+| `src/window.rs`: `macos_titlebar_should_drag` | inside `drag` |
+| `src/ui/mod.rs`: `titlebar_drag` | `fastframe_titlebar::drag` |
+| `src/ui/mod.rs`: `window_controls`, `caption_feedback` | `fastframe_titlebar::controls(ui, &Style { icon, button, header_height: theme::CUSTOM_TOP_BAR_HEIGHT }, &Labels { .. })`, with the palette's `secondary` (Windows) or `text` (Linux) as `icon` and `surface_hover` as `button` |
+| `src/ui/mod.rs`: `window_resize`, `window_resize_enabled`, `resize_direction`, the resize constants and their tests | `fastframe_titlebar::resize` |
+| `src/ui/mod.rs`: the controls' widths and heights in `window_controls_reservation` and `linux_left_controls_inset` | `fastframe_titlebar::footprint(ctx, theme::CUSTOM_TOP_BAR_HEIGHT)`, and `Footprint::reserve(topbar_width, 510.0)` for the top bar; the queue and lyrics rules stay |
 
-About 35 lines. Difference: Spotifast now also honours the older
-`AppleMiniaturizeOnDoubleClick` switch when the newer key is unset.
-Spotifast keeps AppKit's own traffic-light positions (its top bar is laid
-out around them), so `align_traffic_lights` is not needed there.
+Call `fastframe_titlebar::install(ctx)` beside `fastframe_icons::install`.
+No behaviour change: this is Spotifast's code, and its setting stays off by
+default.
+
+### ZapFast
+
+| Delete | Instead |
+| --- | --- |
+| `src/ui/mod.rs`: `titlebar_drag` | `fastframe_titlebar::drag`, which adds the double-click ZapFast lacked |
+| `fastframe_macos::align_traffic_lights` in `Shell::logic` | `fastframe_titlebar::align_traffic_lights` |
+| `fastframe_macos::traffic_light_inset` and `TRAFFIC_LIGHTS_WIDTH` in `src/theme.rs` | `fastframe_titlebar::footprint(ctx, height).left` and `fastframe_titlebar::TRAFFIC_LIGHTS_WIDTH` (the demo's macOS preview) |
+
+Optionally, the drawn title bar on Windows and Linux as a setting, off by
+default: `set_enabled` at startup, `with_decorations(!enabled())`, and
+`controls`, `resize` and `footprint` in the header. ZapFast's Mica backdrop
+extends the frame itself; the crate leaves the frame alone.
+
+### Solco
+
+| Delete | Instead |
+| --- | --- |
+| `src/ui.rs`: `title_bar_drag` | `fastframe_titlebar::drag`: the drag now starts on the press, as AppKit requires, and minimize on double-click works |
+| `fastframe_macos::align_traffic_lights` | `fastframe_titlebar::align_traffic_lights` |
+| `fastframe_macos::traffic_light_inset` | `fastframe_titlebar::footprint(ctx, TITLE_BAR_HEIGHT).left` (keep the 12 fallback) |
+
+Solco keeps the native frame on Windows and Linux: it never calls
+`set_enabled`, so `drag` does nothing there.
 
 ## fastframe-update
 

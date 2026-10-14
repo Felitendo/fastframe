@@ -1,0 +1,58 @@
+[package]
+name = "fastframe-titlebar"
+description = "The title bar an egui app draws itself: a header that moves the window and answers a double-click on every platform, and on Windows and Linux caption buttons in the desktop's layout and resizable edges"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+keywords = ["egui", "titlebar", "window", "decorations", "csd"]
+categories = ["gui"]
+
+[dependencies]
+egui.workspace = true
+# Minimize, maximize, restore and close: Lucide outlines, shared with the
+# apps' own icon sets.
+fastframe-icons = { path = "../fastframe-icons" }
+
+# `Frame`, whose window handle leads to the NSWindow the traffic lights
+# belong to. Every app builds it.
+eframe.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# The window handle eframe hands out.
+raw-window-handle.workspace = true
+# `sel!` and the main-thread marker, for a header's double-click.
+objc2.workspace = true
+objc2-app-kit = { workspace = true, features = ["NSButton", "NSControl", "NSResponder", "NSView", "NSWindow"] }
+objc2-foundation = { workspace = true, features = ["NSUserDefaults"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# GNOME's button layout and icon theme, read through the portal.
+fastframe-desktop = { path = "../fastframe-desktop" }
+# The user's icon folders. Already in every app's tree.
+directories.workspace = true
+
+[dev-dependencies]
+# Icon theme folders in throwaway directories.
+tempfile.workspace = true
+
+# The workspace forbids unsafe code. The AppKit calls need it, so this crate
+# carries the workspace's lints with `unsafe_code` lowered to `deny`, allowed
+# only in `macos/appkit.rs`, each block with a SAFETY note.
+[lints.rust]
+unsafe_code = "deny"
+missing_docs = "warn"
+unreachable_pub = "warn"
+rust_2018_idioms = { level = "warn", priority = -1 }
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+dbg_macro = "warn"
+todo = "warn"
+unwrap_used = "warn"
+print_stdout = "warn"
+print_stderr = "warn"

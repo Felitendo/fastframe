@@ -1347,17 +1347,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "fastframe-macos"
-version = "0.5.2"
-dependencies = [
- "eframe",
- "egui",
- "objc2-app-kit 0.3.2",
- "objc2-foundation 0.3.2",
- "raw-window-handle",
-]
-
-[[package]]
 name = "fastframe-now-playing"
 version = "0.5.2"
 dependencies = [
@@ -1419,6 +1408,22 @@ dependencies = [
  "notify",
  "serde",
  "serde_json",
+ "tempfile",
+]
+
+[[package]]
+name = "fastframe-titlebar"
+version = "0.5.2"
+dependencies = [
+ "directories",
+ "eframe",
+ "egui",
+ "fastframe-desktop",
+ "fastframe-icons",
+ "objc2 0.6.4",
+ "objc2-app-kit 0.3.2",
+ "objc2-foundation 0.3.2",
+ "raw-window-handle",
  "tempfile",
 ]
 
