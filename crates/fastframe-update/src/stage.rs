@@ -128,12 +128,14 @@ impl Prepared {
     }
 }
 
-/// A new, empty staging folder beside the installation.
+/// A new, empty staging folder beside the installation. Finished folders
+/// from earlier updates go first.
 pub(crate) fn staging(config: &UpdateConfig, installation: &Installation) -> Result<PathBuf> {
     let parent = installation
         .root(config)?
         .parent()
         .context("Missing installation directory")?;
+    sweep(config, parent, None);
     let directory = parent.join(format!(".{}-update-{}", config.slug, random_suffix()?));
     fs::create_dir(&directory).context("Cannot write to the installation directory")?;
     #[cfg(unix)]
@@ -190,6 +192,41 @@ pub(crate) fn discard(directory: &Path) -> bool {
         }
     }
     fs::remove_dir_all(directory).is_ok()
+}
+
+/// How long a helper may hold its folder before the folder counts as left by
+/// a helper that died.
+const ABANDONED: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
+
+/// Removes the staging folders in `parent` that no update uses any more,
+/// except `keep`. Each holds a copy of the app and its backup, so they would
+/// otherwise pile up in the installation folder and keep an uninstaller from
+/// removing it. A folder is finished once its helper wrote `result.txt`, or
+/// when no helper ever took it (a download that was never installed). One
+/// whose helper is still working is left, unless its `ready` is a day old.
+pub(crate) fn sweep(config: &UpdateConfig, parent: &Path, keep: Option<&Path>) {
+    let Ok(entries) = fs::read_dir(parent) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let directory = entry.path();
+        let ours = entry
+            .file_name()
+            .to_str()
+            .is_some_and(|name| is_staging_name(config, name));
+        if !ours
+            || keep == Some(directory.as_path())
+            || !entry.file_type().is_ok_and(|kind| kind.is_dir())
+        {
+            continue;
+        }
+        let working = fs::metadata(directory.join(READY))
+            .and_then(|ready| ready.modified())
+            .is_ok_and(|ready| ready.elapsed().map_or(true, |age| age < ABANDONED));
+        if directory.join(RESULT).exists() || !working {
+            discard(&directory);
+        }
+    }
 }
 
 pub(crate) fn hash(path: &Path) -> Result<String> {
@@ -384,21 +421,22 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let installation = portable(directory.path());
         let first = staging(&ZAPFAST, &installation).unwrap();
+        assert!(first.is_dir());
         let second = staging(&ZAPFAST, &installation).unwrap();
         assert_ne!(first, second);
-        for stage in [&first, &second] {
-            assert_eq!(stage.parent(), Some(directory.path()));
-            let name = stage.file_name().unwrap().to_str().unwrap();
-            assert!(is_staging_name(&ZAPFAST, name), "{name}");
-            assert!(unused(stage));
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                assert_eq!(
-                    fs::metadata(stage).unwrap().permissions().mode() & 0o777,
-                    0o700
-                );
-            }
+        assert!(!first.exists(), "a download never installed is swept");
+        let stage = &second;
+        assert_eq!(stage.parent(), Some(directory.path()));
+        let name = stage.file_name().unwrap().to_str().unwrap();
+        assert!(is_staging_name(&ZAPFAST, name), "{name}");
+        assert!(unused(stage));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(stage).unwrap().permissions().mode() & 0o777,
+                0o700
+            );
         }
     }
 
@@ -431,6 +469,51 @@ mod tests {
             assert!(unused(directory.path()));
             fs::write(directory.path().join(marker), b"stale").unwrap();
             assert!(!unused(directory.path()), "{marker}");
+        }
+    }
+
+    /// Finished and abandoned staging folders go; one a helper is working
+    /// in, the one kept, and anything that is not a staging folder stay.
+    #[test]
+    fn a_sweep_removes_only_the_staging_folders_nothing_uses() {
+        let parent = tempfile::tempdir().unwrap();
+        let folder = |suffix: &str, files: &[&str]| {
+            let directory = parent.path().join(format!(".zapfast-update-{suffix}"));
+            fs::create_dir(&directory).unwrap();
+            for file in files {
+                fs::write(directory.join(file), b"x").unwrap();
+            }
+            directory
+        };
+        let updated = folder("0000000000000001", &[JOB, READY, STARTED, RESULT, PREVIOUS]);
+        let restored = folder("0000000000000002", &[JOB, READY, RESULT, PREVIOUS]);
+        let never_installed = folder("0000000000000003", &["zapfast"]);
+        let working = folder("0000000000000004", &[JOB, READY, PREVIOUS]);
+        let died = folder("0000000000000005", &[JOB, READY, PREVIOUS]);
+        let day_ago = std::time::SystemTime::now() - ABANDONED - std::time::Duration::from_secs(60);
+        File::options()
+            .write(true)
+            .open(died.join(READY))
+            .unwrap()
+            .set_modified(day_ago)
+            .unwrap();
+        let kept = folder("0000000000000006", &[JOB, READY, STARTED, RESULT]);
+        let legacy = parent.path().join(".fastsapp-update-0000000000000007");
+        fs::create_dir(&legacy).unwrap();
+        fs::write(legacy.join(RESULT), b"x").unwrap();
+        let other = parent.path().join(".zapfast-update-old");
+        fs::create_dir(&other).unwrap();
+        fs::write(other.join(RESULT), b"x").unwrap();
+        let file = parent.path().join(".zapfast-update-0000000000000008");
+        fs::write(&file, b"not a folder").unwrap();
+
+        sweep(&ZAPFAST, parent.path(), Some(&kept));
+
+        for gone in [&updated, &restored, &never_installed, &died, &legacy] {
+            assert!(!gone.exists(), "{}", gone.display());
+        }
+        for stays in [&working, &kept, &other, &file] {
+            assert!(stays.exists(), "{}", stays.display());
         }
     }
 

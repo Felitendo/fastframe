@@ -352,6 +352,10 @@ pub(crate) fn acknowledge(config: &UpdateConfig, host: &dyn Host, job: &Path) ->
         .open(staged.file(STARTED))
         .context("The update was already acknowledged")?;
     file.write_all(config.current_version.as_bytes())?;
+    // Earlier updates are over; this one's helper is still finishing.
+    if let Some(parent) = staged.directory.parent() {
+        stage::sweep(config, parent, Some(&staged.directory));
+    }
     Ok(())
 }
 
@@ -1090,8 +1094,18 @@ mod tests {
         let host = FakeHost::default().with_current_exe(&staged.installation.executable);
         let error = acknowledge(&ZAPFAST, &host, &job).unwrap_err();
         assert!(error.to_string().contains("wrong version"), "{error:#}");
+        let earlier = staged
+            .directory
+            .with_file_name(".zapfast-update-00000000000000ee");
+        fs::create_dir(&earlier).unwrap();
+        fs::write(earlier.join(RESULT), b"Updated to 0.16.0").unwrap();
         acknowledge(&NEXT, &host, &job).unwrap();
         assert_eq!(fs::read_to_string(staged.file(STARTED)).unwrap(), "0.17.0");
+        assert!(!earlier.exists(), "an earlier update's folder is swept");
+        assert!(
+            staged.directory.is_dir(),
+            "this update's helper still works there"
+        );
         assert!(acknowledge(&NEXT, &host, &job).is_err(), "only once");
         let other = root.path().join("other-copy");
         fs::write(&other, b"x").unwrap();

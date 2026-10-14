@@ -104,6 +104,12 @@ would report fastframe's version, so the app passes its own.
    acknowledges by writing `started`.
    A failure at any step, or no `started` within a minute, restores
    `previous` and restarts the old app with `--update-error`.
+6. Staging folders do not pile up. When the new app acknowledges, and
+   before each download, the staging folders of earlier updates go: those
+   whose helper wrote `result.txt`, and those no helper ever took. A folder
+   whose helper is still working stays, unless its `ready` is a day old.
+   The latest update's folder stays until the next update or download, so
+   an uninstaller should remove `.<slug>-update-*` folders itself.
 
 ## Windows Installer packages
 
