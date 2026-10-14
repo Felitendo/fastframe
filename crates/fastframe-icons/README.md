@@ -43,7 +43,7 @@ fix. Several icon sets can be installed side by side.
 
 ## Shared icons
 
-`icons/lucide/` holds the 43 Lucide icons that ZapFast and Spotifast ship
+`icons/lucide/` holds the 44 Lucide icons that ZapFast and Spotifast ship
 byte for byte alike (24 px outlines, drawn in white so egui's tint colours
 them). Name them with `lucide "name"`; the lookup runs at compile time, so a
 misspelt name fails the build and only the icons an app names reach its

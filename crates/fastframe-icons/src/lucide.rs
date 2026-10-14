@@ -1,4 +1,5 @@
-//! The Lucide icons ZapFast and Spotifast shipped byte for byte alike.
+//! The Lucide icons ZapFast and Spotifast shipped byte for byte alike, and
+//! the ones fastframe's own crates draw.
 //!
 //! Lucide is ISC licensed, and some of its icons derive from Feather (MIT);
 //! both notices are in `icons/lucide/LICENSE.txt`, which apps ship with
@@ -85,6 +86,7 @@ pub const ALL: &[(&str, &[u8])] = &[
         "smartphone",
         include_bytes!("../icons/lucide/smartphone.svg"),
     ),
+    ("square", include_bytes!("../icons/lucide/square.svg")),
     (
         "square-pen",
         include_bytes!("../icons/lucide/square-pen.svg"),
@@ -138,7 +140,7 @@ mod tests {
 
     #[test]
     fn every_shared_icon_is_a_white_24px_lucide_outline() {
-        assert_eq!(ALL.len(), 43);
+        assert_eq!(ALL.len(), 44);
         for (name, bytes) in ALL {
             let svg = std::str::from_utf8(bytes).unwrap();
             assert!(svg.contains("viewBox=\"0 0 24 24\""), "{name}");
