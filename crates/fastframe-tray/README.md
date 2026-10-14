@@ -98,6 +98,9 @@ out and put back after the shown entries before it.
   `-[NSApplication run]` in slices, which catches Objective-C exceptions
   raised while handling an event; a hand-written event loop let them unwind
   into Rust and abort the process (ZapFast #199).
+- On Windows, while headless, `idle` answers the main thread's window
+  messages as it waits, so Windows does not call the app hung (winit keeps a
+  window on that thread between windows).
 - Anywhere else, `spawn` returns `None` and `idle` sleeps.
 
 ## Sharing muda's menu handler

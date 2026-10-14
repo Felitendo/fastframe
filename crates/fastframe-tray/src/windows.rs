@@ -8,7 +8,9 @@ use std::time::Duration;
 
 use windows_sys::Win32::System::Threading::GetCurrentThreadId;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    DispatchMessageW, GetMessageW, MSG, PostThreadMessageW, TranslateMessage, WM_APP, WM_QUIT,
+    DispatchMessageW, GetMessageW, MSG, MWMO_INPUTAVAILABLE, MsgWaitForMultipleObjectsEx,
+    PM_REMOVE, PeekMessageW, PostQuitMessage, PostThreadMessageW, QS_ALLINPUT, TranslateMessage,
+    WM_APP, WM_QUIT,
 };
 
 use crate::{Config, DrawIcon, Router};
@@ -129,5 +131,83 @@ fn serve(
             TranslateMessage(&message);
             DispatchMessageW(&message);
         }
+    }
+}
+
+/// Waits `duration`, answering this thread's window messages meanwhile.
+/// winit keeps a visible event-target window on the main thread between
+/// windows, and Windows calls a thread that leaves it unanswered for five
+/// seconds hung.
+pub(crate) fn idle(duration: Duration) {
+    let deadline = std::time::Instant::now() + duration;
+    loop {
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        if left.is_zero() {
+            return;
+        }
+        // Rounded up, so a sub-millisecond rest waits rather than spins.
+        let millis = u32::try_from(left.as_micros().div_ceil(1000)).unwrap_or(u32::MAX - 1);
+        // SAFETY: no handles; the call returns on a message or the timeout.
+        unsafe {
+            MsgWaitForMultipleObjectsEx(
+                0,
+                std::ptr::null(),
+                millis,
+                QS_ALLINPUT,
+                MWMO_INPUTAVAILABLE,
+            );
+        }
+        // SAFETY: an all-zero MSG is a valid value for PeekMessageW to fill.
+        let mut message: MSG = unsafe { std::mem::zeroed() };
+        // SAFETY: `message` outlives each call; a null window takes every
+        // message for this thread.
+        while unsafe { PeekMessageW(&mut message, std::ptr::null_mut(), 0, 0, PM_REMOVE) } != 0 {
+            if message.message == WM_QUIT {
+                // Not ours to act on: put it back for the next window's loop.
+                // SAFETY: posts WM_QUIT to this thread with the same code.
+                unsafe { PostQuitMessage(message.wParam as i32) };
+                return;
+            }
+            // SAFETY: `message` came from PeekMessageW just now.
+            unsafe {
+                TranslateMessage(&message);
+                DispatchMessageW(&message);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod idle_tests {
+    use super::*;
+    use windows_sys::Win32::UI::WindowsAndMessaging::PM_NOREMOVE;
+
+    fn peek(first: u32, remove: bool) -> Option<MSG> {
+        // SAFETY: an all-zero MSG is a valid value for PeekMessageW to fill.
+        let mut message: MSG = unsafe { std::mem::zeroed() };
+        let flags = if remove { PM_REMOVE } else { PM_NOREMOVE };
+        // SAFETY: `message` outlives the call; messages `first` alone.
+        let found =
+            unsafe { PeekMessageW(&mut message, std::ptr::null_mut(), first, first, flags) };
+        (found != 0).then_some(message)
+    }
+
+    /// Idling answers the thread's messages, so Windows never calls an app
+    /// in the tray hung, and leaves a quit for the next window's loop.
+    #[test]
+    fn idling_answers_the_threads_messages_and_keeps_a_quit() {
+        // Gives the thread its message queue.
+        assert!(peek(WM_APP + 2, false).is_none());
+        // SAFETY: posts a message with no data to this thread.
+        assert_ne!(
+            unsafe { PostThreadMessageW(GetCurrentThreadId(), WM_APP + 2, 0, 0) },
+            0
+        );
+        idle(Duration::from_millis(50));
+        assert!(peek(WM_APP + 2, false).is_none(), "answered");
+        // SAFETY: posts WM_QUIT to this thread.
+        unsafe { PostQuitMessage(3) };
+        idle(Duration::from_millis(50));
+        assert_eq!(peek(WM_QUIT, true).expect("the quit is kept").wParam, 3);
     }
 }

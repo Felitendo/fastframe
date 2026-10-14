@@ -314,12 +314,16 @@ impl Tray {
 /// Waits `duration` while no window exists.
 ///
 /// On macOS this runs AppKit's event loop, so the menu-bar item, the Dock
-/// and the app menus keep answering; elsewhere the tray has its own thread
-/// and this sleeps.
+/// and the app menus keep answering. On Windows it answers the thread's
+/// window messages, so Windows never calls the app hung while it sits in
+/// the tray (winit keeps a window on this thread between windows). On Linux
+/// the tray has its own thread and this sleeps.
 pub fn idle(duration: Duration) {
     #[cfg(target_os = "macos")]
     macos::pump(duration);
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(windows)]
+    windows::idle(duration);
+    #[cfg(not(any(target_os = "macos", windows)))]
     std::thread::sleep(duration);
 }
 
