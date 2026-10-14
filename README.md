@@ -13,8 +13,9 @@ written for one of those apps first and moved here once another app needed it.
 
 - **Extract from working apps, never design up front.** Code arrives here
   after it has shipped in an app, not before.
-- **Two apps, then it moves.** A piece moves in only once at least two apps
-  have it.
+- **Shared, then it moves.** A piece moves in once at least two apps have
+  it, or once one app has shipped it and the maintainer judges it general
+  enough for the others.
 - **Small crates, one workspace.** Each piece is its own `fastframe-*` crate,
   so an app takes only what it uses.
 - **Good defaults, few knobs.** A crate does the right thing with no

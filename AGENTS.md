@@ -10,8 +10,9 @@ specific instruction in this repository says otherwise.
 
 - Extract from working apps, never design up front. A crate or function
   arrives here after it has shipped in an app.
-- A piece moves in only once at least two apps have it. One app's need stays
-  in that app.
+- A piece moves in once at least two apps have it, or once one app has
+  shipped it and the maintainer judges it general enough for the others. An
+  app's own product need stays in that app.
 - Small crates in one workspace, named `fastframe-*`, each with one job. Do not
   grow a crate into a grab bag; start a new one instead.
 - Good defaults and few knobs. Apps keep their own decisions (branding,
