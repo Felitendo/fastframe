@@ -94,12 +94,14 @@ would report fastframe's version, so the app passes its own.
    have the same identifier, the release's version, the running app's
    signing team and Gatekeeper's approval.
 4. `handoff` copies the running app into the staging folder (the whole
-   bundle on macOS), writes `handoff.json` and starts the helper with
-   `--apply-update`. It returns once the helper writes `ready`.
+   bundle on macOS, and on Windows the DLLs beside the executable too),
+   writes `handoff.json` and starts the helper with `--apply-update`, working
+   in the staging folder. It returns once the helper writes `ready`.
 5. The helper waits for the app to exit, keeps a backup called `previous`,
    replaces the executable (portable), runs the installer silently
    (Windows installer, below) or swaps the bundle (macOS), and relaunches the app
-   with `--update-receipt`. The new app acknowledges by writing `started`.
+   with `--update-receipt`, working in the app's folder. The new app
+   acknowledges by writing `started`.
    A failure at any step, or no `started` within a minute, restores
    `previous` and restarts the old app with `--update-error`.
 
@@ -280,6 +282,17 @@ moves: replacing the installed bundle, and restoring it on rollback, rename
 the bundle out from under a live-bundle helper. It also keeps working when
 the running bundle's name is not the one a release installs. The cost is one
 bundle-sized copy in the staging folder.
+
+### Why the Windows helper takes the app's DLLs
+
+Windows looks for a program's DLLs in its own folder, then the system's,
+then its working directory. The helper's copy sits in the staging folder, so
+without its own copies of the DLLs beside the app's executable (Solco's
+`webgpu_dawn.dll`, say) it either fails to start or, working in the app's
+folder as a Start menu shortcut leaves it, loads the app's DLLs and holds
+them. The installer then finds those files in use and gives up. With the
+copies, and working in the staging folder, the helper holds nothing the
+update replaces.
 
 ## Platforms
 

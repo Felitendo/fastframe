@@ -49,8 +49,12 @@ pub(crate) fn handoff(
             } else {
                 "helper"
             });
-            fs::copy(host.current_exe()?, &helper)
-                .context("Could not prepare the update helper")?;
+            let running = host.current_exe()?;
+            fs::copy(&running, &helper).context("Could not prepare the update helper")?;
+            if cfg!(windows) {
+                copy_libraries(&running, &staged.directory)
+                    .context("Could not prepare the update helper")?;
+            }
             helper
         }
     };
@@ -67,10 +71,13 @@ pub(crate) fn handoff(
         .write(true)
         .create_new(true)
         .open(staged.file(HELPER_LOG))?;
+    // The helper runs in the staging folder, so nothing it loads or holds
+    // open is a file in the app's folder that the update replaces.
     let mut child = host
         .spawn(
             &helper,
             &[APPLY_UPDATE_FLAG.into(), job.into_os_string()],
+            &staged.directory,
             Some(log),
         )
         .context("Cannot start the update helper")?;
@@ -91,6 +98,35 @@ pub(crate) fn handoff(
     }
     child.kill();
     bail!("The update helper did not start. Try again.")
+}
+
+/// Copies the DLLs beside the running `executable` into `directory`, beside
+/// the helper's copy. Windows looks for a program's DLLs in its own folder,
+/// then the system's, then the working directory, so without them the helper
+/// either fails to start or loads the app's own DLLs from its working
+/// directory and holds them while the installer has to replace them.
+fn copy_libraries(executable: &Path, directory: &Path) -> Result<()> {
+    let Some(folder) = executable.parent() else {
+        return Ok(());
+    };
+    for entry in fs::read_dir(folder)? {
+        let entry = entry?;
+        let path = entry.path();
+        let library = path
+            .extension()
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("dll"));
+        if library && entry.file_type()?.is_file() {
+            fs::copy(&path, directory.join(entry.file_name()))?;
+        }
+    }
+    Ok(())
+}
+
+/// Where a launched app runs: its own folder, as its shortcut starts it, and
+/// never the helper's staging folder, which a process working there would
+/// keep Windows from removing.
+fn app_directory(executable: &Path) -> &Path {
+    executable.parent().unwrap_or(executable)
 }
 
 /// The helper: waits for the app to exit, replaces it, relaunches it with a
@@ -152,7 +188,7 @@ pub(crate) fn run(config: &UpdateConfig, host: &dyn Host, job: &Path) -> Result<
     let timing = host.timing();
     let launch = (|| -> Result<()> {
         let mut child = host
-            .spawn(&executable, &arguments, None)
+            .spawn(&executable, &arguments, app_directory(&executable), None)
             .context("Could not launch the updated app")?;
         let start = Instant::now();
         loop {
@@ -288,7 +324,7 @@ fn restart_with_error(host: &dyn Host, executable: &Path, arguments: &[String]) 
     let mut arguments: Vec<OsString> = arguments.iter().map(OsString::from).collect();
     arguments.push(UPDATE_ERROR_FLAG.into());
     arguments.push(RESTORED.into());
-    host.spawn(executable, &arguments, None)
+    host.spawn(executable, &arguments, app_directory(executable), None)
         .context("Could not restart the previous app")?;
     Ok(())
 }
@@ -402,11 +438,38 @@ mod tests {
             [OsString::from("--apply-update"), staged.file(JOB).into()]
         );
         assert!(spawned[0].logged, "the helper's errors go to helper.log");
+        assert_eq!(
+            spawned[0].directory, staged.directory,
+            "the helper holds nothing in the app's folder"
+        );
         assert!(staged.file(HELPER_LOG).is_file());
         let job = stage::read_handoff(&staged.file(JOB)).unwrap();
         assert_eq!(job.prepared, staged);
         assert_eq!(job.parent, std::process::id());
         assert_eq!(job.arguments, ["--verbose"]);
+    }
+
+    /// The helper's copy finds the app's DLLs beside it, so it neither fails
+    /// to start nor loads them from the app's folder.
+    #[test]
+    fn the_helper_takes_copies_of_the_apps_libraries() {
+        let root = tempfile::tempdir().unwrap();
+        let app = root.path().join("app");
+        let staging = root.path().join("staging");
+        fs::create_dir_all(app.join("resources.dll")).unwrap();
+        fs::create_dir_all(&staging).unwrap();
+        fs::write(app.join("solco.exe"), b"app").unwrap();
+        fs::write(app.join("webgpu_dawn.dll"), b"dawn").unwrap();
+        fs::write(app.join("VCRUNTIME140.DLL"), b"runtime").unwrap();
+        fs::write(app.join("solco-installer.txt"), b"marker").unwrap();
+        copy_libraries(&app.join("solco.exe"), &staging).unwrap();
+        let mut copied: Vec<_> = fs::read_dir(&staging)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .collect();
+        copied.sort();
+        assert_eq!(copied, ["VCRUNTIME140.DLL", "webgpu_dawn.dll"]);
+        assert_eq!(fs::read(staging.join("webgpu_dawn.dll")).unwrap(), b"dawn");
     }
 
     #[test]
@@ -478,6 +541,11 @@ mod tests {
         let spawned = host.spawned();
         assert_eq!(spawned.len(), 1);
         assert_eq!(spawned[0].executable, staged.installation.executable);
+        assert_eq!(
+            Some(spawned[0].directory.as_path()),
+            staged.installation.executable.parent(),
+            "the app runs in its folder, not the staging folder"
+        );
         assert_eq!(
             spawned[0].arguments,
             [
@@ -573,6 +641,10 @@ mod tests {
                 ]
             );
             assert_eq!(spawned[1].executable, staged.installation.executable);
+            assert_eq!(
+                Some(spawned[1].directory.as_path()),
+                staged.installation.executable.parent()
+            );
         }
     }
 

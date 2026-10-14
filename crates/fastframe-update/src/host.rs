@@ -58,13 +58,14 @@ pub(crate) trait Host: Send + Sync {
     fn extract(&self, archive: &Path, entry: &str, destination: &Path) -> Result<()>;
     /// What `executable --version` printed, trimmed.
     fn version_output(&self, executable: &Path) -> Result<String>;
-    /// Starts `executable` with `arguments`. With a `log`, standard input and
-    /// output are closed and standard error goes to the log; without one the
-    /// child inherits them.
+    /// Starts `executable` with `arguments` in the working `directory`. With
+    /// a `log`, standard input and output are closed and standard error goes
+    /// to the log; without one the child inherits them.
     fn spawn(
         &self,
         executable: &Path,
         arguments: &[OsString],
+        directory: &Path,
         log: Option<File>,
     ) -> Result<Box<dyn Child>>;
     /// Writes `ready` once process `parent` is being watched, then returns
@@ -242,10 +243,11 @@ mod os {
             &self,
             executable: &Path,
             arguments: &[OsString],
+            directory: &Path,
             log: Option<File>,
         ) -> Result<Box<dyn Child>> {
             let mut command = Command::new(executable);
-            command.args(arguments);
+            command.args(arguments).current_dir(directory);
             if let Some(log) = log {
                 command
                     .stdin(Stdio::null())

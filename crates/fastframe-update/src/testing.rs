@@ -125,6 +125,7 @@ impl Child for FakeChild {
 pub(crate) struct Spawned {
     pub(crate) executable: PathBuf,
     pub(crate) arguments: Vec<OsString>,
+    pub(crate) directory: PathBuf,
     pub(crate) logged: bool,
 }
 
@@ -382,11 +383,13 @@ impl Host for FakeHost {
         &self,
         executable: &Path,
         arguments: &[OsString],
+        directory: &Path,
         log: Option<File>,
     ) -> Result<Box<dyn Child>> {
         lock(&self.spawned).push(Spawned {
             executable: executable.to_owned(),
             arguments: arguments.to_vec(),
+            directory: directory.to_owned(),
             logged: log.is_some(),
         });
         match self.behaviour {
