@@ -190,6 +190,35 @@ or when `niri` is missing or fails, so the app keeps its fallback. Hyprland
 is not asked: `hyprctl dispatch` changed to Lua syntax in 0.56, so one
 request does not work across versions.
 
+## Stalls
+
+A `StallWatch` times each update of the window, logic and drawing together,
+and logs a warning when one takes 250 ms or more, long enough to see the
+window freeze:
+
+```rust
+struct Window { app: Held<App>, stalls: fastframe_shell::StallWatch }
+
+impl eframe::App for Window {
+    fn logic(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        self.stalls.logic(|| self.app.logic(ctx, frame));
+    }
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        self.stalls.ui(|| self.app.ui(ui));
+    }
+}
+```
+
+```text
+WARN the window stalled for 1200 ms in one update (and 2 more times since the last warning)
+```
+
+The first update, which builds fonts and textures, is never reported. A pass
+that only runs its logic (eframe skips `ui` for a minimized window) is an
+update of its own. A burst of stalls makes one warning every ten seconds,
+counting the ones it did not report. It came from Spotifast, where it showed
+the saves that froze the window.
+
 ## Not here: single instance
 
 A second launch should surface the running copy, but the apps do this three

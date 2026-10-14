@@ -57,6 +57,7 @@
 //!   monitor onto the primary one.
 //! - [`window::raise_on_compositor`] asks niri to focus the existing window,
 //!   which Wayland does not let the app do itself.
+//! - [`StallWatch`] logs a warning when an update freezes the window.
 //!
 //! # Decide to hide in `logic`, not `ui`
 //!
@@ -92,7 +93,10 @@ use std::rc::Rc;
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
+mod stall;
 pub mod window;
+
+pub use stall::StallWatch;
 
 /// How often the headless loop calls [`Resident::headless_frame`] while the
 /// app waits in the background.

@@ -17,7 +17,7 @@ categories = ["gui"]
 egui.workspace = true
 # `Frame::winit_window`, for the window and monitor positions recovery reads.
 eframe.workspace = true
-# One warning when a window is moved back on screen.
+# One warning when a window is moved back on screen, and the stall warnings.
 log.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
