@@ -12,6 +12,11 @@ readme = "README.md"
 keywords = ["atomic", "file", "save", "settings", "desktop"]
 categories = ["filesystem"]
 
+[dependencies]
+# Failed background writes, and a durable write on the UI thread in a release
+# build. Already in every app's tree.
+log.workspace = true
+
 [target.'cfg(windows)'.dependencies]
 # MoveFileExW with write-through, so the move itself reaches the disk. Already
 # in every app's tree, at this version.

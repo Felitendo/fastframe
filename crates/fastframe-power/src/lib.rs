@@ -99,7 +99,8 @@ impl Default for Conditions {
 /// Something the system is about to do, or has just done.
 #[derive(Debug)]
 pub enum Event {
-    /// The system is about to sleep. Save, then [`Ack::done`].
+    /// The system is about to sleep. Save, flush the saves (a
+    /// `fastframe_file::Writer` within the time below), then [`Ack::done`].
     Suspending(Ack),
     /// The system woke up. A connection that was open across the sleep can
     /// still look established while nothing arrives through it, so this is
@@ -108,7 +109,8 @@ pub enum Event {
     /// [`Instant`](std::time::Instant). Reported on Linux and Windows, not
     /// yet on macOS.
     Resumed,
-    /// The user is signing out or shutting down. Save, then [`Ack::done`].
+    /// The user is signing out or shutting down. Save and flush, then
+    /// [`Ack::done`].
     /// Reported on Windows.
     EndingSession(Ack),
 }

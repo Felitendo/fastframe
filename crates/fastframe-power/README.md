@@ -41,6 +41,7 @@ for event in power.events() {
     match event {
         Event::Suspending(ack) | Event::EndingSession(ack) => {
             save_state();
+            files.flush(Duration::from_millis(1500)); // a fastframe_file::Writer
             ack.done();
         }
         Event::Resumed => reconnect(),
@@ -85,8 +86,9 @@ it back because a platform says nothing.
 
 ## Sleep, wake and the end of the session
 
-`Suspending` and `EndingSession` carry an `Ack`. Save, then call
-`ack.done()`: the reader holds the system back until then, for at most
+`Suspending` and `EndingSession` carry an `Ack`. Save, wait for the saves to
+reach the disk (`fastframe_file::Writer::flush`, within the times below), then
+call `ack.done()`: the reader holds the system back until then, for at most
 1.5 seconds before sleep (Windows gives its suspend callback about two) and
 3 seconds before signing out or shutting down (Windows lists a window as
 blocking after about five). Call `events()` in every logic pass, including

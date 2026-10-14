@@ -1284,6 +1284,7 @@ dependencies = [
 name = "fastframe-file"
 version = "0.5.1"
 dependencies = [
+ "log",
  "tempfile",
  "windows-sys 0.60.2",
 ]

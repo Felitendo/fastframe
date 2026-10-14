@@ -7,9 +7,12 @@
 //! it over the target in one step, so a reader sees the old contents or the
 //! new ones, never part of either.
 //!
-//! Flushing to the disk can take tens of milliseconds, and far longer on a
-//! busy or network drive. Save from a worker thread, or after the frame,
-//! rather than in the middle of drawing one.
+//! Flushing to the disk can take tens of milliseconds, and seconds on a busy
+//! or network drive. The thread that draws the window must never wait for
+//! it: hand the bytes to a [`Writer`], which writes them on a thread of its
+//! own, and call [`mark_ui_thread`] once on the drawing thread, so a durable
+//! write there is caught (a panic in a debug build, an error in the log in a
+//! release one).
 //!
 //! ```no_run
 //! # fn main() -> std::io::Result<()> {
@@ -25,7 +28,22 @@
 //! # Ok(())
 //! # }
 //! ```
+//!
+//! On the thread that draws the window:
+//!
+//! ```no_run
+//! use fastframe_file::{Access, Writer};
+//! # let path = std::path::Path::new("settings.json");
+//! fastframe_file::mark_ui_thread();
+//! let files = Writer::new();
+//! // Returns at once; a newer save of the same file replaces this one if it
+//! // has not started yet.
+//! files.write(path, br#"{"theme":"dark"}"#.to_vec(), Access::Default);
+//! // Before the app exits:
+//! files.flush(fastframe_file::FLUSH_TIMEOUT);
+//! ```
 
+use std::cell::Cell;
 use std::fs::{File, OpenOptions};
 use std::io::{self, Write as _};
 use std::path::{Path, PathBuf};
@@ -33,6 +51,21 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 #[cfg(windows)]
 mod windows;
+mod writer;
+
+pub use writer::{FLUSH_TIMEOUT, Writer};
+
+thread_local! {
+    static UI_THREAD: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Marks the calling thread as the one that draws the window. From then on
+/// [`write()`], [`write_private`] and [`write_with`] refuse it: a debug
+/// build panics, and a release build logs an error and still writes, rather
+/// than lose what was saved. Hand its saves to a [`Writer`] instead.
+pub fn mark_ui_thread() {
+    UI_THREAD.with(|ui| ui.set(true));
+}
 
 /// Who may read the file.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -63,6 +96,26 @@ pub fn write_private(path: &Path, contents: impl AsRef<[u8]>) -> io::Result<()> 
 /// anything after it fails, `path` keeps its old contents and the temporary
 /// file is removed.
 pub fn write_with(
+    path: &Path,
+    access: Access,
+    fill: impl FnOnce(&mut File) -> io::Result<()>,
+) -> io::Result<()> {
+    if UI_THREAD.with(Cell::get) {
+        let message = format!(
+            "{} was written on the UI thread, which then waits for the disk; \
+             hand it to a fastframe_file::Writer",
+            path.display()
+        );
+        if cfg!(debug_assertions) {
+            panic!("{message}");
+        }
+        log::error!("{message}");
+    }
+    replace_with(path, access, fill)
+}
+
+/// [`write_with`] without the UI thread check, for the [`Writer`].
+fn replace_with(
     path: &Path,
     access: Access,
     fill: impl FnOnce(&mut File) -> io::Result<()>,
@@ -140,10 +193,10 @@ fn sync_dir(_dir: &Path) -> io::Result<()> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
-    fn leftovers(dir: &Path) -> Vec<String> {
+    pub(crate) fn leftovers(dir: &Path) -> Vec<String> {
         std::fs::read_dir(dir)
             .unwrap()
             .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
@@ -191,6 +244,29 @@ mod tests {
     #[test]
     fn a_bare_file_name_is_written_in_the_current_directory() {
         assert_eq!(temporary_path(Path::new("x")).parent(), Some(Path::new("")));
+    }
+
+    /// A durable write on the UI thread fails tests, so a save that would
+    /// freeze the window cannot come back unnoticed.
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "UI thread")]
+    fn the_ui_thread_cannot_wait_for_the_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        mark_ui_thread();
+        let _ = write(&dir.path().join("settings.json"), "{}");
+    }
+
+    /// A release build logs the mistake but still writes, rather than lose
+    /// what was saved.
+    #[cfg(not(debug_assertions))]
+    #[test]
+    fn a_release_build_still_writes_on_the_ui_thread() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        mark_ui_thread();
+        write(&path, "{}").unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "{}");
     }
 
     #[cfg(unix)]
