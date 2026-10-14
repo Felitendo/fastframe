@@ -59,6 +59,10 @@
 //!   which Wayland does not let the app do itself.
 //! - [`StallWatch`] logs a warning when an update freezes the window.
 //!
+//! [`Shell::run`] marks its thread as the UI thread for `fastframe-file`,
+//! whose durable writes there then panic in a debug build: hand saves to a
+//! `fastframe_file::Writer` instead.
+//!
 //! # Decide to hide in `logic`, not `ui`
 //!
 //! eframe runs only `eframe::App::logic` for a minimized or occluded window:
@@ -211,6 +215,11 @@ impl<A: Resident> Shell<A> {
 
     /// Runs the app until it quits, then calls [`Resident::shutdown`].
     ///
+    /// The calling thread runs every window and headless tick, so it is
+    /// marked as the UI thread first (`fastframe_file::mark_ui_thread`): a
+    /// durable write on it panics in a debug build and logs an error in a
+    /// release one.
+    ///
     /// `open_window` makes one window and returns when it closes: it calls
     /// `eframe::run_native`, and its app creator calls [`Lease::take`] with
     /// the new context, keeping the [`Held`] app in its `eframe::App`. When
@@ -227,6 +236,7 @@ impl<A: Resident> Shell<A> {
             start_hidden,
             idle,
         } = self;
+        fastframe_file::mark_ui_thread();
         let slot = Rc::new(RefCell::new(Some(app)));
         let mut hidden_start = start_hidden;
         'windows: loop {
@@ -677,6 +687,21 @@ mod tests {
         let result = Shell::new(script(&[], &[], false), &waker).run(|_lease| Err("no display"));
         assert_eq!(result, Err("no display"));
         assert!(!calls().contains(&"shutdown"));
+    }
+
+    /// A window's save that would wait for the disk fails a debug build.
+    /// The check panics before it touches the disk.
+    #[cfg(debug_assertions)]
+    #[test]
+    fn the_shell_thread_refuses_saves_that_wait_for_the_disk() {
+        let waker = Waker::default();
+        let result = Shell::new(script(&[], &[], false), &waker).run(|_lease| {
+            let save = std::panic::catch_unwind(|| {
+                fastframe_file::write(std::path::Path::new("unwritten"), "{}")
+            });
+            save.map(drop).map_err(|_| "refused")
+        });
+        assert_eq!(result, Err("refused"));
     }
 
     #[test]

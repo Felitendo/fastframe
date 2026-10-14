@@ -190,6 +190,19 @@ or when `niri` is missing or fails, so the app keeps its fallback. Hyprland
 is not asked: `hyprctl dispatch` changed to Lua syntax in 0.56, so one
 request does not work across versions.
 
+## Saves on the UI thread
+
+`Shell::run` marks its thread, which runs every window and headless tick, as
+the UI thread for `fastframe-file`. A `fastframe_file::write`,
+`write_private` or `write_with` there then panics in a debug build and logs
+an error in a release one, because it waits for the disk while the window
+waits for it. Hand saves to a `fastframe_file::Writer`, which writes on a
+thread of its own.
+
+Move `fastframe-file` and `fastframe-shell` to the same tag. Two copies of
+`fastframe-file` in one build keep two separate marks, and the check then
+misses the app's saves.
+
 ## Stalls
 
 A `StallWatch` times each update of the window, logic and drawing together,

@@ -19,6 +19,9 @@ egui.workspace = true
 eframe.workspace = true
 # One warning when a window is moved back on screen, and the stall warnings.
 log.workspace = true
+# `Shell::run` marks its thread, so a save that would freeze the window is
+# caught. Every app on the shell saves through it already.
+fastframe-file = { path = "../fastframe-file" }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # Reads `niri msg --json windows` to find this process's window. Already in
