@@ -9,6 +9,8 @@
 //!   or window button layout, read through the desktop portal. That works
 //!   inside a Flatpak too, where running `gsettings` does not, and needs no
 //!   process.
+//! - [`macos_notifications_allowed`]: checks the real application bundle
+//!   before asking macOS for notification permission, off the UI thread.
 //!
 //! ```no_run
 //! let entry = fastframe_desktop::desktop_entry("zapfast");
@@ -17,6 +19,38 @@
 //! if fastframe_desktop::is_gnome() { /* skip the attention request */ }
 //! # let _ = (entry, twelve_hour);
 //! ```
+
+#[cfg(any(target_os = "macos", test))]
+mod notifications;
+
+/// Whether this macOS application can send native notifications.
+///
+/// Checks the process's actual bundle once, then requests authorization on
+/// every call. macOS prompts only if permission has not been decided yet;
+/// later calls observe changes made in System Settings without a restart.
+/// An unpackaged executable stays silent. No application lookup, substitute
+/// bundle identity or AppleScript is used.
+///
+/// Call from a worker only when the app intends to notify, not during
+/// startup or when its notification preference is disabled. The permission
+/// request can block waiting for the user. A running native event loop is
+/// needed by the notification framework. Delivery and click handling remain
+/// the app's responsibility, through `mac-usernotifications`.
+///
+/// Returns `false` on other platforms, without a bundle, after denial, or
+/// when the native check or request fails. This is a macOS guard, not a
+/// cross-platform notification-permission query.
+#[must_use]
+pub fn macos_notifications_allowed() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        notifications::allowed()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        false
+    }
+}
 
 /// The desktop entry the desktop knows the app by, for `own` (the entry's
 /// name without `.desktop`): the sandbox's app id inside a Flatpak, since the

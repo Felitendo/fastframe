@@ -33,3 +33,28 @@ It came from Spotifast, which read the button layout and icon theme with
 same way and checked for GNOME before asking for attention, and
 `fastframe-now-playing`, whose Flatpak-aware desktop entry name ZapFast and
 Solco needed for their notifications too.
+
+## macOS notification permission
+
+On a notification worker, before native delivery:
+
+```rust
+if fastframe_desktop::macos_notifications_allowed() {
+    // Send through mac-usernotifications; keep content, sound and clicks
+    // in the app's notification adapter.
+}
+```
+
+This is ZapFast's `UNUserNotificationCenter` guard: check the actual process
+bundle once, then ask for authorization each time. Unbundled development runs
+stay silent, and System Settings permission changes apply without restarting.
+Errors and denial return `false`; other platforms return `false` without
+calling an OS service. Call only when the app intends to notify and its own
+notification preference allows it. The permission request may wait for the
+user, so keep it off the UI thread and keep the native event loop running.
+
+It does not set or impersonate a bundle ID. Solco's legacy `notify-rust`
+macOS backend tried to resolve an application named `use_default` through
+AppleScript, opening a blocking application chooser. This guard is for the
+modern `mac-usernotifications` API ZapFast already uses, not a workaround for
+that legacy backend. Spotifast currently sends no system notifications.

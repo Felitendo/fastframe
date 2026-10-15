@@ -12,6 +12,12 @@ readme = "README.md"
 keywords = ["desktop", "flatpak", "gnome", "portal", "settings"]
 categories = ["gui", "os"]
 
+[target.'cfg(target_os = "macos")'.dependencies]
+# ZapFast's native notification framework: check the real process bundle
+# before authorization, without the legacy backend's AppleScript lookup.
+mac-usernotifications = "0.3.1"
+log.workspace = true
+
 [target.'cfg(target_os = "linux")'.dependencies]
 # One blocking portal call needs no tokio: zbus's own small executor does,
 # as in fastframe-text. Apps that enable zbus's tokio feature keep it.

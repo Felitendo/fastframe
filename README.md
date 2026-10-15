@@ -46,7 +46,7 @@ written for one of those apps first and moved here once another app needed it.
 | [`fastframe-now-playing`](crates/fastframe-now-playing) | The desktop's media controls: what is playing, with artwork, in MPRIS, the Windows media overlay and the macOS Now Playing panel, and the media keys and buttons back. |
 | [`fastframe-power`](crates/fastframe-power) | The device's power, session and network state: energy saver, battery, display, lock, the network's reach and cost, sleep and wake with time to save first, EcoQoS in the background on Windows, and keeping audio out of App Nap on macOS. |
 | [`fastframe-file`](crates/fastframe-file) | Replaces a file without ever leaving it half written: a temporary file beside it, flushed, then moved over it, privately if asked, on a thread of its own so the window never waits for the disk. |
-| [`fastframe-desktop`](crates/fastframe-desktop) | Who the app is to the desktop and what it says: the desktop entry a Flatpak exports, whether the session is GNOME, and a desktop setting read through the portal (no `gsettings` process). |
+| [`fastframe-desktop`](crates/fastframe-desktop) | Who the app is to the desktop and what it says: the desktop entry a Flatpak exports, whether the session is GNOME, a desktop setting read through the portal (no `gsettings` process), and macOS notification permission guarded by the real application bundle. |
 | [`fastframe-update`](crates/fastframe-update) | Self-update from GitHub releases: detects package-managed installs, verifies signed checksums, installs through a helper with rollback, keeps the handoff format older app versions use, moves renamed installations onto the new name with their launchers, and offers an opt-in pre-release channel. |
 
 ## Status
