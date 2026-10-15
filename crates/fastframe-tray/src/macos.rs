@@ -325,7 +325,6 @@ mod tests {
             icon: |size| vec![0; size * size * 4],
             template_icon: None,
             themed_icon: true,
-            menu_on_click: false,
             menu,
         };
         let mut host = Host::start(config, router).unwrap();

@@ -19,7 +19,6 @@ let tray = Tray::spawn(
         icon: util::app_icon_rgba,                 // fn(usize) -> Vec<u8>, RGBA
         template_icon: Some(util::tray_template_rgba), // macOS menu bar
         themed_icon: true,     // Linux: also name the installed app icon
-        menu_on_click: false,  // macOS: any click opens the menu
         menu: vec![
             MenuItem::action("show", "Show or hide Spotifast"),
             MenuItem::Separator,
@@ -92,8 +91,8 @@ out and put back after the shown entries before it.
   runs, so the first `attach` makes the item, and each `attach` brings the
   app forward; `create_item` makes it without activating the app, for a
   start with no window. The icon is drawn at 36 pixels, the menu bar's
-  18 points at 2x. A left click is `Event::Toggle`; the menu opens on right
-  click, or on any click with `menu_on_click`. A click on the Dock icon is `Event::Show`, even for a minimized
+  18 points at 2x. Either click opens the menu. A click on the Dock icon is
+  `Event::Show`, even for a minimized
   window (AppKit calls that visible). While headless, `idle` runs
   `-[NSApplication run]` in slices, which catches Objective-C exceptions
   raised while handling an event; a hand-written event loop let them unwind

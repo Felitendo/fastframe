@@ -18,7 +18,6 @@
 //!     icon,
 //!     template_icon: None,
 //!     themed_icon: true,
-//!     menu_on_click: false,
 //!     menu: vec![
 //!         MenuItem::action("show", "Show or hide ZapFast"),
 //!         MenuItem::Separator,
@@ -75,8 +74,7 @@
 //!   event loop runs, so the item is made by the first [`Tray::attach`] (or,
 //!   for an app with no window yet, [`Tray::create_item`]), and
 //!   [`idle`] runs AppKit's loop while no window exists. A Dock click asks to
-//!   [`Event::Show`]. The menu opens on right click and left click toggles,
-//!   or any click opens the menu with [`Config::menu_on_click`].
+//!   [`Event::Show`]. Either click on the menu-bar item opens its menu.
 //!
 //! The menu handler of tray-icon (muda) is process-wide, and muda keeps the
 //! first one installed, ignoring the rest. An app that builds its own muda
@@ -118,9 +116,6 @@ pub struct Config {
     /// changes with [`Tray::set_icon`]), since a host that has the name
     /// draws that instead of the pixels.
     pub themed_icon: bool,
-    /// On macOS, open the menu on any click, as menu-bar items do, rather
-    /// than toggling the window on a left click.
-    pub menu_on_click: bool,
     /// The menu, top to bottom.
     pub menu: Vec<MenuItem>,
 }
@@ -178,8 +173,8 @@ impl MenuItem {
 /// What the person did with the tray item.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Event {
-    /// A left click on Linux or macOS: show the window if it is hidden,
-    /// hide it otherwise.
+    /// A left click on Linux: show the window if it is hidden, hide it
+    /// otherwise.
     Toggle,
     /// Bring the window up: a left click on Windows, or a Dock click on
     /// macOS (even for a minimized window, which AppKit reports as visible).
@@ -422,14 +417,10 @@ impl Router {
     }
 }
 
-/// What a left click on the icon asks for.
-#[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
-fn left_click(on_windows: bool) -> Event {
-    if on_windows {
-        Event::Show
-    } else {
-        Event::Toggle
-    }
+/// A native icon's primary-click action, or `None` to open its menu.
+#[cfg(any(windows, target_os = "macos", test))]
+fn native_left_click(on_macos: bool) -> Option<Event> {
+    if on_macos { None } else { Some(Event::Show) }
 }
 
 /// Changes the label of `id` in `menu`; whether it was there.
@@ -557,13 +548,12 @@ mod tests {
         assert!(!claim_menu_event(&menu_id("show")));
     }
 
-    /// Spotifast 5eb054e: each release of a Windows double-click arrives
-    /// separately, possibly on both sides of window creation. Both must ask
-    /// to show the window, or the second hides it again.
+    /// A macOS menu click must not also toggle the window. On Windows each
+    /// release of a double-click asks to show, so the second cannot hide it.
     #[test]
-    fn a_windows_click_shows_and_elsewhere_toggles() {
-        assert_eq!(left_click(true), Event::Show);
-        assert_eq!(left_click(false), Event::Toggle);
+    fn native_clicks_open_the_menu_on_macos_and_show_the_window_on_windows() {
+        assert_eq!(native_left_click(true), None);
+        assert_eq!(native_left_click(false), Some(Event::Show));
     }
 
     #[test]

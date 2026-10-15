@@ -152,16 +152,16 @@ pub(crate) fn build(config: &Config, router: Router) -> Result<Item, Box<dyn std
     let (draw, template) = pick_icon(config.icon, config.template_icon);
     let icon = Icon::from_rgba(draw(ICON_SIZE), size, size)?;
     let entries = Entries::new(&config.menu)?;
-    // Left click toggles (macOS) or shows (Windows) the window; the menu
-    // opens on right click (Spotifast #310), or on any click on macOS when
-    // the app asks for the menu-bar habit.
-    let menu_on_click = config.menu_on_click && cfg!(target_os = "macos");
+    // A macOS menu-bar item opens its menu on either click. On Windows the
+    // menu opens on right click (Spotifast #310), while left click shows the
+    // window.
+    let left_click = crate::native_left_click(cfg!(target_os = "macos"));
     let icon = TrayIconBuilder::new()
         .with_icon(icon)
         .with_icon_as_template(template)
         .with_tooltip(&config.title)
         .with_menu(Box::new(entries.menu.clone()))
-        .with_menu_on_left_click(menu_on_click)
+        .with_menu_on_left_click(left_click.is_none())
         .build()?;
 
     router.install();
@@ -174,9 +174,9 @@ pub(crate) fn build(config: &Config, router: Router) -> Result<Item, Box<dyn std
             button_state: MouseButtonState::Up,
             ..
         } = event
-            && !menu_on_click
+            && let Some(action) = left_click
         {
-            router.send(crate::left_click(cfg!(windows)));
+            router.send(action);
         }
     }));
 
