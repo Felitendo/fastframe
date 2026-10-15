@@ -1,0 +1,72 @@
+[package]
+name = "fastframe-notifications"
+description = "Native desktop notifications with one interface for GUI apps and background agents"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+keywords = ["desktop", "notifications", "toast"]
+categories = ["gui", "os"]
+
+[dependencies]
+log.workspace = true
+# Already used by the consumers: one background runtime handles delivery and
+# clicks without blocking the UI or starting a thread for every notification.
+tokio = { version = "1", features = ["rt", "sync", "time", "macros"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# The apps already use zbus. One shared connection owns IDs and subscriptions;
+# futures-lite merges the action and close streams without another runtime.
+futures-lite = "2"
+fastframe-desktop = { path = "../fastframe-desktop", version = "0.6.0" }
+zbus.workspace = true
+
+# macOS bindings already used by ZapFast and Solco, with cancellation-safe
+# response registration instead of the upstream consuming response future.
+[target.'cfg(target_os = "macos")'.dependencies]
+mac-usernotifications = { version = "0.3.1", default-features = false }
+block2 = { version = "0.6", default-features = false, features = ["std"] }
+objc2 = { version = "0.6", default-features = false, features = ["std"] }
+objc2-foundation = { version = "0.3", default-features = false, features = [
+  "std", "NSArray", "NSBundle", "NSDictionary", "NSEnumerator", "NSError",
+  "NSObject", "NSSet", "NSString", "NSUUID",
+] }
+objc2-user-notifications = { version = "0.3", default-features = false, features = [
+  "std", "block2", "UNNotification", "UNNotificationAction", "UNNotificationCategory",
+  "UNNotificationContent", "UNNotificationRequest", "UNNotificationResponse",
+  "UNNotificationSettings", "UNNotificationSound", "UNNotificationTrigger",
+  "UNUserNotificationCenter",
+] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+# Bindings already used by fastframe-now-playing. Direct access also lets
+# the shared service withdraw toasts and release activation handlers.
+windows = { version = "0.62", features = ["Data_Xml_Dom", "Foundation", "UI_Notifications"] }
+windows-sys = { workspace = true, features = ["Win32_System_Registry"] }
+# Already used by fastframe-update: stable, bounded native tags and file URIs.
+sha2 = "0.11"
+url = "2"
+
+# Native Objective-C callbacks and Win32 registry calls need narrowly scoped unsafe.
+[lints.rust]
+unsafe_code = "deny"
+missing_docs = "warn"
+unreachable_pub = "warn"
+rust_2018_idioms = { level = "warn", priority = -1 }
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+dbg_macro = "warn"
+todo = "warn"
+unwrap_used = "warn"
+print_stdout = "warn"
+print_stderr = "warn"
+
+[dev-dependencies]
+# Exercise Windows payload mappings on every CI platform without native calls.
+sha2 = "0.11"
+url = "2"

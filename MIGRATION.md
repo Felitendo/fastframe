@@ -1014,3 +1014,23 @@ have settled:
 Their sizes and colours differ by app, so a shared crate would take the
 palette through a small trait (or the `BASE_COLORS` names) rather than fix
 any app's look.
+
+## Native notifications
+
+Use `fastframe-notifications` for platform delivery, including headless agents.
+Replace direct `notify-rust`, `mac-usernotifications` and Windows toast calls with
+`Client`, `Notification` and `Handle`. Set the actual bundle ID / Windows shortcut
+AppUserModelID and the Linux desktop entry. Keep handles while clicks or updates
+matter; dropping one leaves desktop history intact, while `close` withdraws it.
+
+Permission checks and permission prompts are separate. Query from a daemon and
+request after the user enables notifications. A macOS daemon needs a signed
+bundled broker and a main run loop; `run_main` pumps it without creating a window.
+The older `fastframe_desktop::macos_notifications_allowed` guard remains for
+compatibility but is unnecessary with the new client.
+
+Solco retains its task generations and progress throttling. ZapFast retains
+account/chat scoping, rate limits, private-content rules and audio previews.
+Spotifast and TonePush currently have no system notification adapter to migrate.
+For an app such as Chat with Work, use its daemon as the native delivery owner
+for the GUI and TUI. Its server owns preferences, presence and browser deduplication.

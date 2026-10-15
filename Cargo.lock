@@ -1349,6 +1349,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "fastframe-notifications"
+version = "0.6.0"
+dependencies = [
+ "block2 0.6.2",
+ "fastframe-desktop",
+ "futures-lite",
+ "log",
+ "mac-usernotifications",
+ "objc2 0.6.4",
+ "objc2-foundation 0.3.2",
+ "objc2-user-notifications 0.3.2",
+ "sha2",
+ "tokio",
+ "url",
+ "windows 0.62.2",
+ "windows-sys 0.60.2",
+ "zbus",
+]
+
+[[package]]
 name = "fastframe-now-playing"
 version = "0.6.0"
 dependencies = [

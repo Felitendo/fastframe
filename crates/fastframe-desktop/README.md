@@ -58,3 +58,8 @@ macOS backend tried to resolve an application named `use_default` through
 AppleScript, opening a blocking application chooser. This guard is for the
 modern `mac-usernotifications` API ZapFast already uses, not a workaround for
 that legacy backend. Spotifast currently sends no system notifications.
+
+New notification integrations use [`fastframe-notifications`](../fastframe-notifications),
+which owns delivery, permission status and requests, click listeners, replacement
+and withdrawal on all three platforms. The guard above remains for existing
+consumers; apps using the shared client do not also call it.
