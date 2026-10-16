@@ -45,6 +45,9 @@ objc2-foundation = { workspace = true, features = ["NSArray", "NSEnumerator", "N
 windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Security", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging"] }
 
 [dev-dependencies]
+# The interactive lifecycle regression creates a real tray and native windows.
+fastframe-tray = { path = "../fastframe-tray" }
+eframe = { workspace = true, features = ["default_fonts"] }
 # The niri parser's tests run on every platform.
 serde_json.workspace = true
 

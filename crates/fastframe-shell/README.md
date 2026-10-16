@@ -258,3 +258,23 @@ requests through `headless_frame` like any other.
 
 Chat with Work's window loop is also different (`pump_app_events` on one
 winit loop with its tray), so it is not a user of this crate yet.
+
+## Checking the native tray lifecycle
+
+`cargo run -p fastframe-shell --example tray_lifecycle` opens a synthetic
+window with a tray menu. Close and reopen it through the tray repeatedly,
+then choose **Recreate window** to replace the window immediately. After each
+transition, verify that both mouse buttons still reach the native menu where
+supported and that **Show or hide** and **Quit fixture** work. On macOS also
+check the Dock after minimizing and closing. Repeat with `-- --hidden` to
+start without a window. This exercises real `eframe::run_native` teardown;
+hiding an `NSWindow` alone does not cover it. No account or user files are used.
+
+Winit 0.30.10 through 0.30.13 closes every AppKit window when its event loop
+exits, including the window behind a macOS status item. The icon can remain
+visible but stop accepting clicks. Apps need the fix in
+[rust-windowing/winit#4754](https://github.com/rust-windowing/winit/pull/4754)
+(backported in [crmne/winit#2](https://github.com/crmne/winit/pull/2)).
+Fastframe cannot fix that ownership error by keeping the tray object alive;
+its native window must survive the event loop too. Keep the application's
+winit patch when running this example to verify the same dependency versions.
