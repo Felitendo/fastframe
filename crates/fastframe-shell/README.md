@@ -278,3 +278,10 @@ visible but stop accepting clicks. Apps need the fix in
 Fastframe cannot fix that ownership error by keeping the tray object alive;
 its native window must survive the event loop too. Keep the application's
 winit patch when running this example to verify the same dependency versions.
+
+Starting hidden also needs
+[rust-windowing/winit#4770](https://github.com/rust-windowing/winit/pull/4770):
+the headless AppKit loop can finish launching before winit installs its
+delegate. Without that fix, the menu works but **Show or hide** never creates
+the first window. After opening and closing that first window, also verify
+that clicking the Dock icon opens another window.

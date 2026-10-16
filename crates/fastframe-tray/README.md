@@ -91,7 +91,9 @@ out and put back after the shown entries before it.
   runs, so the first `attach` makes the item, and each `attach` brings the
   app forward; `create_item` makes it without activating the app, for a
   start with no window. The icon is drawn at 36 pixels, the menu bar's
-  18 points at 2x. Either click opens the menu. A click on the Dock icon is
+  18 points at 2x. Either click opens the menu. The Dock reopen handler is
+  installed again when the first window attaches after a hidden start, once
+  winit's application delegate exists. A click on the Dock icon is
   `Event::Show`, even for a minimized
   window (AppKit calls that visible). While headless, `idle` runs
   `-[NSApplication run]` in slices, which catches Objective-C exceptions

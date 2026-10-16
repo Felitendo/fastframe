@@ -112,6 +112,11 @@ impl Host {
     pub(crate) fn attach(&mut self) {
         self.create_item();
         if ITEM.with(|slot| slot.borrow().is_some()) {
+            // A hidden start can make the item before winit installs its
+            // delegate. Retry once the first window has made it available.
+            if let Some(mtm) = MainThreadMarker::new() {
+                install_reopen_handler(&NSApplication::sharedApplication(mtm));
+            }
             activate();
         }
     }
@@ -184,6 +189,10 @@ fn install_reopen_handler(app: &NSApplication) {
     };
     let delegate: &AnyObject = AsRef::<AnyObject>::as_ref(&*delegate);
     let class = delegate.class();
+    install_reopen_handler_on_class(class);
+}
+
+fn install_reopen_handler_on_class(class: &AnyClass) {
     let selector = sel!(applicationShouldHandleReopen:hasVisibleWindows:);
     if class.responds_to(selector) {
         return;
@@ -281,8 +290,64 @@ pub(crate) fn pump(duration: Duration) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use objc2::ClassType;
+    use objc2::runtime::ClassBuilder;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn a_delegate_created_later_gets_one_reopen_handler() {
+        let class = ClassBuilder::new(c"FastframeLateDelegateTest", NSObject::class())
+            .expect("unique test class")
+            .register();
+        let selector = sel!(applicationShouldHandleReopen:hasVisibleWindows:);
+        assert!(!class.responds_to(selector));
+        install_reopen_handler_on_class(class);
+        let installed = class
+            .instance_method(selector)
+            .expect("reopen handler")
+            .implementation();
+        install_reopen_handler_on_class(class);
+        assert_eq!(
+            class
+                .instance_method(selector)
+                .expect("reopen handler")
+                .implementation() as *const (),
+            installed as *const (),
+            "attaching a later window must keep the existing handler"
+        );
+    }
+
+    #[test]
+    fn an_apps_own_reopen_handler_is_preserved() {
+        extern "C-unwind" fn own_handler(
+            _delegate: &AnyObject,
+            _selector: Sel,
+            _application: *mut NSApplication,
+            _visible: Bool,
+        ) -> Bool {
+            Bool::NO
+        }
+        let mut builder = ClassBuilder::new(c"FastframeOwnDelegateTest", NSObject::class())
+            .expect("unique test class");
+        let selector = sel!(applicationShouldHandleReopen:hasVisibleWindows:);
+        // SAFETY: the implementation matches the native selector's signature.
+        unsafe {
+            builder.add_method(
+                selector,
+                own_handler as extern "C-unwind" fn(_, _, _, _) -> _,
+            );
+        }
+        let class = builder.register();
+        install_reopen_handler_on_class(class);
+        assert_eq!(
+            class
+                .instance_method(selector)
+                .expect("own handler")
+                .implementation() as *const (),
+            own_handler as *const (),
+        );
+    }
 
     /// A Dock click asks for the window whatever AppKit says about visible
     /// ones, and wakes the app so a minimized window reads it.
