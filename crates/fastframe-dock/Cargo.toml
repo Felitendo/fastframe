@@ -1,0 +1,43 @@
+[package]
+name = "fastframe-dock"
+description = "Application Dock icons and desktop unread badges"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+
+[dependencies]
+log.workspace = true
+# Existing app window handles, without depending on a windowing toolkit.
+raw-window-handle.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+zbus.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2.workspace = true
+objc2-app-kit = { workspace = true, features = ["NSDockTile", "NSImage"] }
+objc2-foundation = { workspace = true, features = ["NSBundle", "NSData"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+# The same bindings ZapFast uses for its shipped taskbar overlay.
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_System_Com", "Win32_UI_Controls", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
+
+# AppKit and Win32 need unsafe calls, restricted to their native modules.
+[lints.rust]
+unsafe_code = "deny"
+missing_docs = "warn"
+unreachable_pub = "warn"
+rust_2018_idioms = { level = "warn", priority = -1 }
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+dbg_macro = "warn"
+todo = "warn"
+unwrap_used = "warn"
+print_stdout = "warn"
+print_stderr = "warn"
