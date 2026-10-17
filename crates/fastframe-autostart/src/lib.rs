@@ -228,6 +228,17 @@ pub fn macos_agent_plist(bundle_id: &str, hidden_argument: &str) -> String {
     plist::agent(bundle_id, hidden_argument)
 }
 
+/// Where a bundle at `bundle` carries the agent [`macos_agent_plist_name`]
+/// names. Whether that file is there is how to tell that the bundle can start
+/// hidden: `SMAppService` reports an agent it never registered as not found
+/// too, so its status cannot say.
+#[cfg_attr(not(any(target_os = "macos", test)), allow(dead_code))]
+fn macos_bundled_agent(bundle: &std::path::Path, bundle_id: &str) -> std::path::PathBuf {
+    bundle
+        .join("Contents/Library/LaunchAgents")
+        .join(macos_agent_plist_name(bundle_id))
+}
+
 /// What `SMAppService` says about one service, the main app's or the agent's.
 #[cfg_attr(not(any(target_os = "macos", test)), allow(dead_code))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -235,6 +246,8 @@ enum ServiceStatus {
     NotRegistered,
     Enabled,
     RequiresApproval,
+    /// No record of the service: a missing plist, but also an agent that was
+    /// never registered.
     NotFound,
 }
 
@@ -317,6 +330,20 @@ mod tests {
             service_state(Enabled, RequiresApproval),
             State::On(Start::Window),
             "an approved login item beats an agent still waiting"
+        );
+    }
+
+    /// The agent is looked for where the bundle carries it, by name.
+    #[test]
+    fn the_bundled_agent_is_inside_the_bundle() {
+        assert_eq!(
+            macos_bundled_agent(
+                std::path::Path::new("/Applications/Spotifast.app"),
+                "rocks.spotifast.Spotifast"
+            ),
+            std::path::Path::new(
+                "/Applications/Spotifast.app/Contents/Library/LaunchAgents/rocks.spotifast.Spotifast.autostart.plist"
+            )
         );
     }
 

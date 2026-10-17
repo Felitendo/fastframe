@@ -9,12 +9,14 @@ use objc2::runtime::AnyClass;
 use objc2_foundation::{NSBundle, NSString};
 use objc2_service_management::{SMAppService, SMAppServiceStatus};
 
-use crate::{Autostart, ServiceStatus, Start, State, service_state};
+use crate::{Autostart, ServiceStatus, Start, State, macos_bundled_agent, service_state};
 
 /// The two services of a bundled app on macOS 13 or later.
 struct Services {
     main: Retained<SMAppService>,
     agent: Retained<SMAppService>,
+    /// Whether the bundle carries the agent's plist.
+    has_agent: bool,
 }
 
 impl Services {
@@ -23,10 +25,12 @@ impl Services {
     fn new() -> Option<Self> {
         AnyClass::get(c"SMAppService")?;
         let bundle = NSBundle::mainBundle();
-        if !bundle.bundlePath().to_string().ends_with(".app") {
+        let path = bundle.bundlePath().to_string();
+        if !path.ends_with(".app") {
             return None;
         }
         let id = bundle.bundleIdentifier()?.to_string();
+        let has_agent = macos_bundled_agent(std::path::Path::new(&path), &id).is_file();
         let plist = NSString::from_str(&crate::macos_agent_plist_name(&id));
         // SAFETY: the class exists (checked above), and both constructors
         // take any name; a missing plist reports `NotFound` as its status.
@@ -36,7 +40,11 @@ impl Services {
                 SMAppService::agentServiceWithPlistName(&plist),
             )
         };
-        Some(Self { main, agent })
+        Some(Self {
+            main,
+            agent,
+            has_agent,
+        })
     }
 }
 
@@ -94,7 +102,9 @@ pub(crate) fn set(app: &Autostart, start: Option<Start>) -> io::Result<State> {
     // The new registration first, so a failure leaves the old one working.
     match start {
         Some(Start::Hidden) => {
-            if status(&services.agent) == ServiceStatus::NotFound {
+            // Not the agent's status: an agent never registered is not
+            // found either, so that would refuse the first hidden start.
+            if !services.has_agent {
                 return Err(io::Error::new(
                     io::ErrorKind::Unsupported,
                     "the bundle carries no launch agent to start hidden",
