@@ -3,7 +3,7 @@
 use tray_icon::menu::{Menu, MenuEvent, PredefinedMenuItem};
 use tray_icon::{Icon, MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
 
-use crate::{Config, DrawIcon, MenuItem, Router};
+use crate::{Config, Look, MenuItem, Router};
 
 /// The icon's size in pixels, which the system scales for the tray: the
 /// macOS menu bar draws 18-point icons, 36 pixels on the Retina screens it
@@ -34,11 +34,12 @@ impl Item {
         }
     }
 
-    /// Changes the icon, the macOS template image when there is one.
-    pub(crate) fn set_icon(&self, icon: DrawIcon, template_icon: Option<DrawIcon>) {
-        let (draw, template) = pick_icon(icon, template_icon);
+    /// Changes the icon in place: the macOS template image when there is
+    /// one, or the white or black rendition.
+    pub(crate) fn set_look(&self, look: Look) {
+        let (pixels, template) = look.pixels(ICON_SIZE, cfg!(target_os = "macos"));
         let size = ICON_SIZE as u32;
-        let result = Icon::from_rgba(draw(ICON_SIZE), size, size)
+        let result = Icon::from_rgba(pixels, size, size)
             .map_err(|error| error.to_string())
             .and_then(|icon| {
                 self.icon
@@ -59,14 +60,6 @@ impl Item {
         if let Err(error) = self.icon.set_tooltip(Some(text)) {
             log::warn!("the tray tooltip could not be changed: {error}");
         }
-    }
-}
-
-/// The icon to draw, and whether it is a macOS template image.
-fn pick_icon(icon: DrawIcon, template_icon: Option<DrawIcon>) -> (DrawIcon, bool) {
-    match template_icon {
-        Some(template) if cfg!(target_os = "macos") => (template, true),
-        _ => (icon, false),
     }
 }
 
@@ -147,10 +140,14 @@ impl Entries {
 }
 
 /// Makes the item on the current thread and routes its events to `router`.
-pub(crate) fn build(config: &Config, router: Router) -> Result<Item, Box<dyn std::error::Error>> {
+pub(crate) fn build(
+    config: &Config,
+    look: Look,
+    router: Router,
+) -> Result<Item, Box<dyn std::error::Error>> {
     let size = ICON_SIZE as u32;
-    let (draw, template) = pick_icon(config.icon, config.template_icon);
-    let icon = Icon::from_rgba(draw(ICON_SIZE), size, size)?;
+    let (pixels, template) = look.pixels(ICON_SIZE, cfg!(target_os = "macos"));
+    let icon = Icon::from_rgba(pixels, size, size)?;
     let entries = Entries::new(&config.menu)?;
     // A macOS menu-bar item opens its menu on either click. On Windows the
     // menu opens on right click (Spotifast #310), while left click shows the

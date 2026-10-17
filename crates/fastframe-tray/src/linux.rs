@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use ksni::blocking::TrayMethods;
 
-use crate::{Config, DrawIcon, Event, MenuItem, Router};
+use crate::{Config, Event, Look, MenuItem, Router};
 
 /// The size of the pixmap handed to the tray host, which scales it.
 const ICON_SIZE: usize = 64;
@@ -28,12 +28,13 @@ impl Host {
             String::new()
         };
         let shown = Arc::new(AtomicBool::new(true));
+        let look = Look::new(&config);
         let item = Item {
             id: config.id,
             icon_name,
             title: config.title,
             tooltip: None,
-            icon: config.icon,
+            look,
             menu: config.menu,
             router,
             shown: Arc::clone(&shown),
@@ -61,8 +62,10 @@ impl Host {
         });
     }
 
-    pub(crate) fn set_icon(&mut self, icon: DrawIcon, _template_icon: Option<DrawIcon>) {
-        self.handle.update(|item| item.icon = icon);
+    /// ksni compares the item's properties after the change and tells the
+    /// panel when its icon or icon name changed, so the item stays.
+    pub(crate) fn set_look(&mut self, look: Look) {
+        self.handle.update(|item| item.look = look);
     }
 
     pub(crate) fn set_tooltip(&mut self, text: String) {
@@ -147,7 +150,7 @@ struct Item {
     icon_name: String,
     title: String,
     tooltip: Option<String>,
-    icon: DrawIcon,
+    look: Look,
     menu: Vec<MenuItem>,
     router: Router,
     shown: Arc<AtomicBool>,
@@ -173,8 +176,14 @@ impl ksni::Tray for Item {
         self.title.clone()
     }
 
+    /// The installed icon is the full-colour one, so a white or black
+    /// rendition goes without a name, or a host would draw the colour icon.
     fn icon_name(&self) -> String {
-        self.icon_name.clone()
+        if self.look.nameable() {
+            self.icon_name.clone()
+        } else {
+            String::new()
+        }
     }
 
     fn tool_tip(&self) -> ksni::ToolTip {
@@ -195,7 +204,7 @@ impl ksni::Tray for Item {
         vec![ksni::Icon {
             width: ICON_SIZE as i32,
             height: ICON_SIZE as i32,
-            data: argb(&(self.icon)(ICON_SIZE)),
+            data: argb(&self.look.pixels(ICON_SIZE, false).0),
         }]
     }
 
@@ -295,7 +304,11 @@ mod tests {
             icon_name: String::new(),
             title: "ZapFast".into(),
             tooltip: None,
-            icon: |size| vec![0; size * size * 4],
+            look: Look {
+                icon: |size| vec![0; size * size * 4],
+                template: None,
+                colour: crate::IconColour::Original,
+            },
             menu,
             router,
             shown: Arc::new(AtomicBool::new(true)),
@@ -334,7 +347,11 @@ mod tests {
             icon_name: String::new(),
             title: "Chat with Work".into(),
             tooltip: Some("Chat with Work\nOnline, 3 files indexed".into()),
-            icon: |size| vec![0; size * size * 4],
+            look: Look {
+                icon: |size| vec![0; size * size * 4],
+                template: None,
+                colour: crate::IconColour::Original,
+            },
             menu,
             router,
             shown: Arc::new(AtomicBool::new(true)),
@@ -388,7 +405,11 @@ mod tests {
             icon_name: String::new(),
             title: "ZapFast".into(),
             tooltip: None,
-            icon: |size| vec![0; size * size * 4],
+            look: Look {
+                icon: |size| vec![0; size * size * 4],
+                template: None,
+                colour: crate::IconColour::Original,
+            },
             menu,
             router,
             shown: Arc::new(AtomicBool::new(true)),
@@ -405,5 +426,37 @@ mod tests {
         assert_eq!(shown(&item), [true, false]);
         crate::set_visible(&mut item.menu, "lock", true);
         assert_eq!(shown(&item), [true, true]);
+    }
+
+    /// A white or black icon drops the installed icon's name, which a host
+    /// would draw in colour instead, and gets it back with the original.
+    #[test]
+    fn a_monochrome_icon_is_drawn_from_pixels_and_never_named() {
+        use ksni::Tray as _;
+        let (sender, _events) = std::sync::mpsc::channel();
+        let router = Router::new(sender, Arc::new(|| {}), &[]);
+        let mut item = Item {
+            id: "spotifast",
+            icon_name: "spotifast".into(),
+            title: "Spotifast".into(),
+            tooltip: None,
+            look: Look {
+                icon: |size| vec![30; size * size * 4],
+                template: Some(|size| [0, 0, 0, 200].repeat(size * size)),
+                colour: crate::IconColour::Original,
+            },
+            menu: Vec::new(),
+            router,
+            shown: Arc::new(AtomicBool::new(true)),
+        };
+        assert_eq!(item.icon_name(), "spotifast");
+        assert_eq!(item.icon_pixmap()[0].data[..4], [30, 30, 30, 30]);
+
+        item.look.colour = crate::IconColour::White;
+        assert_eq!(item.icon_name(), "");
+        assert_eq!(item.icon_pixmap()[0].data[..4], [200, 255, 255, 255]);
+
+        item.look.colour = crate::IconColour::Original;
+        assert_eq!(item.icon_name(), "spotifast");
     }
 }

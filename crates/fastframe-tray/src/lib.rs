@@ -6,7 +6,7 @@
 //! interface reads them promptly, even while no window exists.
 //!
 //! ```no_run
-//! use fastframe_tray::{Config, Event, MenuItem, Tray};
+//! use fastframe_tray::{Config, Event, IconColour, MenuItem, Tray};
 //!
 //! fn icon(size: usize) -> Vec<u8> {
 //!     vec![255; size * size * 4] // The app draws its RGBA icon here.
@@ -49,6 +49,8 @@
 //!     tray.set_visible("show", true);
 //!     tray.set_icon(icon, None);
 //!     tray.set_tooltip("ZapFast\nConnected");
+//!     // A white or black rendition, to match the panel:
+//!     tray.set_icon_colour(IconColour::White);
 //! }
 //! // When a window has been made (macOS creates the item then):
 //! if let Some(tray) = &mut tray {
@@ -108,13 +110,15 @@ pub struct Config {
     /// The full-colour icon (Linux, Windows, and macOS without a template).
     pub icon: DrawIcon,
     /// A macOS template image: black on transparent, which macOS recolours
-    /// to match the menu bar. `None` uses [`Config::icon`] as it is.
+    /// to match the menu bar. `None` uses [`Config::icon`] as it is. It is
+    /// also the shape [`IconColour::White`] and [`IconColour::Black`] paint.
     pub template_icon: Option<DrawIcon>,
     /// On Linux, also name the app's installed icon to the panel, for the
     /// hosts that draw only icons they look up by name. Turn it off for an
     /// app whose tray icon differs from its app icon (a glyph, or one that
     /// changes with [`Tray::set_icon`]), since a host that has the name
-    /// draws that instead of the pixels.
+    /// draws that instead of the pixels. A white or black icon
+    /// ([`Tray::set_icon_colour`]) is never named.
     pub themed_icon: bool,
     /// The menu, top to bottom.
     pub menu: Vec<MenuItem>,
@@ -183,12 +187,103 @@ pub enum Event {
     Menu(&'static str),
 }
 
+/// Which rendition of the icon the item shows, so a person can match it to
+/// their panel. Change it with [`Tray::set_icon_colour`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum IconColour {
+    /// The icon as configured: [`Config::icon`], or on macOS
+    /// [`Config::template_icon`] when there is one, which the menu bar draws
+    /// black or white to match itself.
+    #[default]
+    Original,
+    /// The icon's shape in white, for a dark panel: [`Config::template_icon`]
+    /// (or, without one, [`Config::icon`]) with every pixel white and its
+    /// transparency kept. On macOS an ordinary image, which the menu bar
+    /// does not recolour.
+    White,
+    /// The icon's shape in black, for a light panel, as for
+    /// [`IconColour::White`].
+    Black,
+}
+
+#[cfg_attr(
+    not(any(target_os = "linux", windows, target_os = "macos")),
+    allow(dead_code)
+)]
+impl IconColour {
+    /// The colour every pixel is painted, or `None` to keep the icon's own.
+    fn paint(self) -> Option<[u8; 3]> {
+        match self {
+            Self::Original => None,
+            Self::White => Some([255, 255, 255]),
+            Self::Black => Some([0, 0, 0]),
+        }
+    }
+}
+
+/// The icons the app supplied and the rendition it asked for.
+#[derive(Clone, Copy, Debug)]
+#[cfg_attr(
+    not(any(target_os = "linux", windows, target_os = "macos")),
+    allow(dead_code)
+)]
+struct Look {
+    icon: DrawIcon,
+    template: Option<DrawIcon>,
+    colour: IconColour,
+}
+
+#[cfg_attr(
+    not(any(target_os = "linux", windows, target_os = "macos")),
+    allow(dead_code)
+)]
+impl Look {
+    fn new(config: &Config) -> Self {
+        Self {
+            icon: config.icon,
+            template: config.template_icon,
+            colour: IconColour::Original,
+        }
+    }
+
+    /// The RGBA pixels to show at `size`, and whether they are a macOS
+    /// template image (only ever on macOS).
+    fn pixels(&self, size: usize, macos: bool) -> (Vec<u8>, bool) {
+        match (self.colour.paint(), self.template) {
+            (None, Some(template)) if macos => (template(size), true),
+            (None, _) => ((self.icon)(size), false),
+            (Some(rgb), template) => (paint(template.unwrap_or(self.icon)(size), rgb), false),
+        }
+    }
+
+    /// Whether a Linux panel may draw the app's named icon instead.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    fn nameable(&self) -> bool {
+        self.colour == IconColour::Original
+    }
+}
+
+/// Paints every pixel of `rgba` in `rgb`, keeping its transparency, so the
+/// shape stays and its colours go.
+#[cfg_attr(
+    not(any(target_os = "linux", windows, target_os = "macos")),
+    allow(dead_code)
+)]
+fn paint(mut rgba: Vec<u8>, rgb: [u8; 3]) -> Vec<u8> {
+    for pixel in rgba.as_chunks_mut::<4>().0 {
+        pixel[..3].copy_from_slice(&rgb);
+    }
+    rgba
+}
+
 /// The tray item. Dropping it removes the item on Linux and Windows; the
 /// macOS item lives until the process ends.
 pub struct Tray {
     events: Receiver<Event>,
     #[cfg(any(target_os = "linux", windows, target_os = "macos"))]
     host: Host,
+    #[cfg(any(target_os = "linux", windows, target_os = "macos"))]
+    look: Look,
 }
 
 impl std::fmt::Debug for Tray {
@@ -208,8 +303,10 @@ impl Tray {
         let (sender, events) = std::sync::mpsc::channel();
         let router = Router::new(sender, Arc::new(wake), &config.menu);
         #[cfg(any(target_os = "linux", windows, target_os = "macos"))]
+        let look = Look::new(&config);
+        #[cfg(any(target_os = "linux", windows, target_os = "macos"))]
         match Host::start(config, router) {
-            Ok(host) => Some(Self { events, host }),
+            Ok(host) => Some(Self { events, host, look }),
             Err(error) => {
                 log::info!("no system tray available: {error}");
                 None
@@ -257,12 +354,30 @@ impl Tray {
     }
 
     /// Changes the icon (dimmed while offline, say), with its macOS template
-    /// image as in [`Config`].
+    /// image as in [`Config`]. The rendition chosen with
+    /// [`set_icon_colour`](Self::set_icon_colour) stays.
     pub fn set_icon(&mut self, icon: DrawIcon, template_icon: Option<DrawIcon>) {
         #[cfg(any(target_os = "linux", windows, target_os = "macos"))]
-        self.host.set_icon(icon, template_icon);
+        {
+            self.look.icon = icon;
+            self.look.template = template_icon;
+            self.host.set_look(self.look);
+        }
         #[cfg(not(any(target_os = "linux", windows, target_os = "macos")))]
         let _ = (icon, template_icon);
+    }
+
+    /// Shows the icon as it is, or in white or black to match the panel
+    /// (see [`IconColour`]), in place: the item and its menu stay. The item
+    /// starts with [`IconColour::Original`].
+    pub fn set_icon_colour(&mut self, colour: IconColour) {
+        #[cfg(any(target_os = "linux", windows, target_os = "macos"))]
+        if self.look.colour != colour {
+            self.look.colour = colour;
+            self.host.set_look(self.look);
+        }
+        #[cfg(not(any(target_os = "linux", windows, target_os = "macos")))]
+        let _ = colour;
     }
 
     /// Changes the tooltip, which is the app's title until this is called.
@@ -628,5 +743,64 @@ mod tests {
         assert_eq!(shown_position(&menu, "lock"), Some(1));
         assert_eq!(shown_position(&menu, "quit"), Some(3));
         assert_eq!(shown_position(&menu, "missing"), None);
+    }
+
+    fn coloured(size: usize) -> Vec<u8> {
+        [30, 215, 96, 255].repeat(size * size)
+    }
+
+    /// Black on transparent, with a half-transparent edge pixel.
+    fn template(size: usize) -> Vec<u8> {
+        let mut rgba = [0, 0, 0, 0].repeat(size * size);
+        rgba[3] = 255;
+        rgba[7] = 128;
+        rgba
+    }
+
+    fn look(template_icon: Option<DrawIcon>, colour: IconColour) -> Look {
+        Look {
+            icon: coloured,
+            template: template_icon,
+            colour,
+        }
+    }
+
+    #[test]
+    fn painting_keeps_the_shape_and_drops_the_colours() {
+        let rgba = vec![30, 215, 96, 255, 1, 2, 3, 128, 9, 9, 9, 0];
+        assert_eq!(
+            paint(rgba, [255, 255, 255]),
+            [255, 255, 255, 255, 255, 255, 255, 128, 255, 255, 255, 0]
+        );
+    }
+
+    /// The original icon is today's: the colour icon, and on macOS the
+    /// template image the menu bar recolours.
+    #[test]
+    fn the_original_icon_is_the_colour_one_or_the_macos_template() {
+        let original = look(Some(template), IconColour::Original);
+        assert_eq!(original.pixels(2, false), (coloured(2), false));
+        assert_eq!(original.pixels(2, true), (template(2), true));
+        let no_template = look(None, IconColour::Original);
+        assert_eq!(no_template.pixels(2, true), (coloured(2), false));
+        assert!(original.nameable());
+        assert_eq!(IconColour::default(), IconColour::Original);
+    }
+
+    /// White and black paint the template's shape, as plain images on every
+    /// platform, and fall back to the colour icon's shape without one.
+    #[test]
+    fn white_and_black_paint_the_template_shape_everywhere() {
+        for macos in [false, true] {
+            let (white, template_image) = look(Some(template), IconColour::White).pixels(2, macos);
+            assert!(!template_image);
+            assert_eq!(&white[..8], [255, 255, 255, 255, 255, 255, 255, 128]);
+            assert_eq!(&white[8..12], [255, 255, 255, 0]);
+            let (black, _) = look(Some(template), IconColour::Black).pixels(2, macos);
+            assert_eq!(&black[..8], [0, 0, 0, 255, 0, 0, 0, 128]);
+        }
+        let (shape, _) = look(None, IconColour::Black).pixels(1, false);
+        assert_eq!(shape, [0, 0, 0, 255]);
+        assert!(!look(None, IconColour::White).nameable());
     }
 }

@@ -19,7 +19,7 @@ use objc2_app_kit::{NSApplication, NSEvent, NSEventModifierFlags, NSEventType};
 use objc2_foundation::{NSObjectNSDelayedPerforming, NSPoint};
 
 use crate::native::Item;
-use crate::{Config, DrawIcon, Event, Router};
+use crate::{Config, Event, Look, Router};
 
 thread_local! {
     /// The status item, which only the main thread may touch.
@@ -33,6 +33,8 @@ pub(crate) struct Host {
     pending: Option<(Config, Router)>,
     /// A tooltip set before the item was made.
     pending_tooltip: Option<String>,
+    /// The icon to make the item with, kept up to date before it exists.
+    look: Look,
 }
 
 impl Host {
@@ -43,6 +45,7 @@ impl Host {
     )]
     pub(crate) fn start(config: Config, router: Router) -> Result<Self, String> {
         Ok(Self {
+            look: Look::new(&config),
             pending: Some((config, router)),
             pending_tooltip: None,
         })
@@ -80,13 +83,11 @@ impl Host {
         with_item(|item| item.set_enabled(id, enabled));
     }
 
-    pub(crate) fn set_icon(&mut self, icon: DrawIcon, template_icon: Option<DrawIcon>) {
-        if let Some((config, _)) = &mut self.pending {
-            config.icon = icon;
-            config.template_icon = template_icon;
-            return;
+    pub(crate) fn set_look(&mut self, look: Look) {
+        self.look = look;
+        if self.pending.is_none() {
+            with_item(|item| item.set_look(look));
         }
-        with_item(|item| item.set_icon(icon, template_icon));
     }
 
     pub(crate) fn set_tooltip(&mut self, text: String) {
@@ -100,7 +101,7 @@ impl Host {
     /// Makes the item if it does not exist yet, without activating the app.
     pub(crate) fn create_item(&mut self) {
         if let Some((config, router)) = self.pending.take() {
-            create(&config, router);
+            create(&config, self.look, router);
             if let Some(text) = self.pending_tooltip.take() {
                 with_item(|item| item.set_tooltip(&text));
             }
@@ -132,14 +133,14 @@ fn with_item(act: impl FnOnce(&Item)) {
 }
 
 /// Makes the item, once, on the main thread.
-fn create(config: &Config, router: Router) {
+fn create(config: &Config, look: Look, router: Router) {
     let Some(mtm) = MainThreadMarker::new() else {
         log::warn!("the status item can only be made on the main thread");
         return;
     };
     REOPEN.with(|slot| *slot.borrow_mut() = Some(router.clone()));
     install_reopen_handler(&NSApplication::sharedApplication(mtm));
-    match crate::native::build(config, router) {
+    match crate::native::build(config, look, router) {
         Ok(item) => ITEM.with(|slot| *slot.borrow_mut() = Some(item)),
         Err(error) => log::info!("no status item: {error}"),
     }
@@ -397,6 +398,10 @@ mod tests {
         host.set_visible("play", false);
         host.set_enabled("play", false);
         host.set_tooltip("Spotifast\nPaused".into());
+        let mut look = host.look;
+        look.colour = crate::IconColour::Black;
+        host.set_look(look);
+        assert_eq!(host.look.colour, crate::IconColour::Black);
         let (config, _) = host.pending.as_ref().unwrap();
         assert_eq!(
             config.menu[0],

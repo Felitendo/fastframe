@@ -10,7 +10,7 @@ called for each one so the app reads them promptly, with or without a window.
 ## Usage
 
 ```rust
-use fastframe_tray::{Config, Event, MenuItem, Tray};
+use fastframe_tray::{Config, Event, IconColour, MenuItem, Tray};
 
 let tray = Tray::spawn(
     Config {
@@ -53,6 +53,8 @@ tray.set_enabled("play-pause", connected);
 tray.set_visible("lock", password_set);
 tray.set_icon(if online { util::tray_rgba } else { util::tray_dimmed_rgba }, None);
 tray.set_tooltip("Spotifast\nPlaying: Song, by Band"); // Linux: title, then detail
+// A white or black rendition, so the item matches the panel:
+tray.set_icon_colour(IconColour::White);
 
 // When a window is made (the macOS item is created by the first call):
 tray.attach();
@@ -65,7 +67,24 @@ fastframe_tray::idle(std::time::Duration::from_millis(150));
 ```
 
 Labels, greying, visibility, the icon and the tooltip change while the app
-runs, on every platform. A disabled entry (`MenuItem::enabled(false)`) is
+runs, on every platform, without making the item again.
+
+## White and black icons
+
+`set_icon_colour` picks the icon's rendition, for a person to match it to
+their panel:
+
+- `IconColour::Original` (the default) is the icon as configured: `icon`, and
+  on macOS `template_icon` when there is one, which the menu bar draws black
+  or white to match itself.
+- `IconColour::White` and `IconColour::Black` paint the shape of
+  `template_icon` (or of `icon`, without one) white or black, keeping its
+  transparency, so the app supplies no extra artwork. They are ordinary
+  images on every platform, macOS included, where the menu bar does not
+  recolour them. On Linux they are sent without the installed icon's name
+  (`themed_icon`), since a host that has the name would draw the colour icon.
+
+The choice survives `set_icon`, and changes the item in place. A disabled entry (`MenuItem::enabled(false)`) is
 greyed out, as for a status line. On Linux
 a hidden entry stays in the StatusNotifier menu with its `visible` flag off;
 tray-icon's menus have no hidden entries, so on Windows and macOS it is taken
