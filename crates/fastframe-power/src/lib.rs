@@ -225,6 +225,8 @@ impl Shared {
 /// queue), so a slow or absent service never holds up the app.
 pub struct Power {
     shared: Arc<Shared>,
+    /// Made by [`Power::fixed`]: nothing here reaches the system.
+    fixed: bool,
     #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
     _reader: Option<Reader>,
     #[cfg(target_os = "windows")]
@@ -249,6 +251,7 @@ impl Power {
             #[cfg(target_os = "windows")]
             eco_qos: windows::EcoQos::default(),
             shared,
+            fixed: false,
         }
     }
 
@@ -264,6 +267,7 @@ impl Power {
             .unwrap_or_else(PoisonError::into_inner) = conditions;
         Self {
             shared,
+            fixed: true,
             #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
             _reader: None,
             #[cfg(target_os = "windows")]
@@ -334,6 +338,18 @@ impl Power {
     /// [`Ack`].
     pub fn send(&self, event: Event) {
         self.shared.push(event);
+    }
+
+    /// Keeps the computer awake while the result is held, as
+    /// [`KeepAwake::begin`] does. A [`fixed`](Self::fixed) `Power` hands out
+    /// an inert hold instead, so tests and demo runs never keep the real
+    /// computer awake or reach the system for it.
+    pub fn keep_awake(&self, reason: &str) -> KeepAwake {
+        if self.fixed {
+            KeepAwake::inert()
+        } else {
+            KeepAwake::begin(reason)
+        }
     }
 }
 
@@ -408,8 +424,15 @@ impl std::fmt::Debug for Activity {
 ///
 /// Keep it in an `Option<KeepAwake>` and begin one only when there is none,
 /// as with [`Activity`]. It does nothing on a platform that cannot do it.
+/// [`Power::keep_awake`] takes one that a [fixed](Power::fixed) `Power`
+/// leaves inert, so tests and demo runs never hold the real computer awake.
 #[must_use = "the computer may sleep again once this is dropped"]
 pub struct KeepAwake {
+    hold: Option<Hold>,
+}
+
+/// What the platform holds for a [`KeepAwake`].
+struct Hold {
     #[cfg(target_os = "macos")]
     _token: macos::Activity,
     #[cfg(target_os = "windows")]
@@ -423,39 +446,44 @@ impl KeepAwake {
     /// such as "Playing audio".
     pub fn begin(reason: &str) -> Self {
         log::debug!("keeping the computer awake: {reason}");
-        #[cfg(target_os = "macos")]
-        {
-            Self {
-                _token: macos::Activity::keep_awake(reason),
-            }
-        }
-        #[cfg(target_os = "windows")]
-        {
-            Self {
-                _request: windows::KeepAwake::begin(reason),
-            }
-        }
-        #[cfg(target_os = "linux")]
-        {
-            Self {
-                _inhibit: linux::KeepAwake::begin(reason),
-            }
-        }
+        let hold = Hold {
+            #[cfg(target_os = "macos")]
+            _token: macos::Activity::keep_awake(reason),
+            #[cfg(target_os = "windows")]
+            _request: windows::KeepAwake::begin(reason),
+            #[cfg(target_os = "linux")]
+            _inhibit: linux::KeepAwake::begin(reason),
+        };
         #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
-        {
-            Self {}
-        }
+        let _ = reason;
+        Self { hold: Some(hold) }
+    }
+
+    /// A hold that does nothing, as a fixed [`Power`] hands out.
+    fn inert() -> Self {
+        Self { hold: None }
+    }
+
+    /// Whether this asked the system to stay awake: false for the inert
+    /// hold of a fixed [`Power`]. Whether the system agreed is logged.
+    #[must_use]
+    pub fn is_held(&self) -> bool {
+        self.hold.is_some()
     }
 }
 
 impl Drop for KeepAwake {
     fn drop(&mut self) {
-        log::debug!("the computer may sleep again");
+        if self.hold.take().is_some() {
+            log::debug!("the computer may sleep again");
+        }
     }
 }
 
 impl std::fmt::Debug for KeepAwake {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("KeepAwake")
+        f.debug_struct("KeepAwake")
+            .field("held", &self.is_held())
+            .finish()
     }
 }

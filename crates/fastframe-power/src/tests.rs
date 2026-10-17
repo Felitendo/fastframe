@@ -115,6 +115,16 @@ fn power_and_activities_can_move_between_threads() {
     send_and_sync::<Ack>();
 }
 
+/// Tests and demo runs hold the computer awake as the app would, but a
+/// fixed `Power` never reaches the system for it.
+#[test]
+fn a_fixed_monitor_keeps_nothing_awake() {
+    let power = Power::fixed(Conditions::default());
+    let awake = power.keep_awake("Playing audio");
+    assert!(!awake.is_held());
+    assert_eq!(format!("{awake:?}"), "KeepAwake { held: false }");
+}
+
 /// Beginning and ending activities, one inside another, as playback starts
 /// and stops. On macOS this asks NSProcessInfo; elsewhere it does nothing.
 #[test]

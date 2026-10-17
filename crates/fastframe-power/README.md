@@ -135,7 +135,8 @@ use fastframe_power::KeepAwake;
 let mut awake: Option<KeepAwake> = None;
 // In the logic pass, with `playing_here` from the player:
 if playing_here {
-    awake.get_or_insert_with(|| KeepAwake::begin("Playing audio"));
+    // Or KeepAwake::begin, which does not need the Power.
+    awake.get_or_insert_with(|| power.keep_awake("Playing audio"));
 } else {
     awake = None;
 }
@@ -143,6 +144,8 @@ if playing_here {
 
 It blocks idle sleep only. The display still turns off, the screen still
 locks, and the user can still put the computer to sleep or close the lid.
+`Power::keep_awake` hands out an inert hold on a `Power::fixed`, so tests
+and demo runs never keep the real computer awake.
 
 - macOS: an `NSProcessInfo` activity with idle system sleep disabled
   (`PreventUserIdleSystemSleep` in `pmset -g assertions`).
