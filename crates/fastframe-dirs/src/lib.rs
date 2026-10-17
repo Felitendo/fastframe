@@ -424,9 +424,24 @@ fn copy_tree(from: &Path, to: &Path, skip: &[&str]) -> io::Result<()> {
     Ok(())
 }
 
-/// The folder as Windows compares paths: without case.
+/// The folder as Windows compares paths: without case, and through the
+/// executable's folder resolved, so a launch through a short (8.3) name, a
+/// link or another spelling of the same folder finds the same slot. The
+/// data folder itself may not exist yet; its parent does.
 fn folder_key(folder: &Path) -> String {
-    folder.to_string_lossy().to_lowercase()
+    let resolved = folder
+        .parent()
+        .zip(folder.file_name())
+        .and_then(|(parent, name)| {
+            fs::canonicalize(parent)
+                .ok()
+                .map(|parent| parent.join(name))
+        });
+    resolved
+        .as_deref()
+        .unwrap_or(folder)
+        .to_string_lossy()
+        .to_lowercase()
 }
 
 /// 64-bit FNV-1a: small, and the same in every build, which a slot name

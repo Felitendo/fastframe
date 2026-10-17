@@ -389,6 +389,21 @@ fn each_portable_folder_has_a_stable_instance_scope_of_its_own() {
 }
 
 #[test]
+fn another_spelling_of_the_same_folder_finds_the_same_slot() {
+    let fixture = Fixture::new();
+    let scope = |folder: PathBuf| Portable::Folder(folder).instance_scope().unwrap();
+    let direct = scope(fixture.folder());
+    let roundabout = fixture.app().join("..").join("app").join("sample-data");
+    assert_eq!(scope(roundabout), direct);
+    #[cfg(unix)]
+    {
+        let link = fixture.app().with_file_name("link");
+        std::os::unix::fs::symlink(fixture.app(), &link).unwrap();
+        assert_eq!(scope(link.join("sample-data")), direct);
+    }
+}
+
+#[test]
 fn portable_folders_are_never_used_outside_windows() {
     let app = App::new(SLUG, "rocks", "sample", "Sample");
     if !cfg!(windows) {
