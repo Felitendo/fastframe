@@ -84,7 +84,8 @@ would report fastframe's version, so the app passes its own.
 2. `installation` refuses copies a package manager owns: Flatpak, Snap,
    apt, dnf, pacman (including the AUR), Nix, Homebrew (formula paths and
    casks, which link to the bundle from `Caskroom`) and `cargo install`, and
-   any Linux or Windows copy without a marker file next to it.
+   any Linux or Windows copy without a marker file next to it. With
+   `appimage: true`, an AppImage the user owns updates itself (below).
 3. `download` reads the release by tag and requires the one asset named for
    this platform and installation, plus `checksums.txt` and, with a publisher
    key, `checksums.txt.sig`. The signature is checked before anything is
@@ -144,6 +145,50 @@ An app moves over in two releases. The first ships both the setup program
 and the package: older versions only know `-setup.exe` and update to it,
 and that release's updater prefers the package. Releases after it can ship
 the package alone.
+
+## AppImages
+
+An app whose release lists `<slug>-<version>-<arch>.AppImage` (`x86_64` or
+`aarch64`, the name native-packages gives it) in the signed
+`checksums.txt` turns AppImage updates on:
+
+```rust
+pub const UPDATES: UpdateConfig = UpdateConfig {
+    appimage: true,
+    ..UpdateConfig::new("crmne/spotifast", "Spotifast", "spotifast", env!("CARGO_PKG_VERSION"))
+};
+```
+
+- A copy runs from an AppImage when `$APPIMAGE` is an absolute path and the
+  running executable is inside `$APPDIR`, both of which the AppImage
+  runtime sets. A program an AppImage started inherits the variables but
+  runs from elsewhere, so it never takes that AppImage for its own.
+- The AppImage is refused when dpkg, rpm or pacman owns it, when it is under
+  `/usr`, `/bin` or `/sbin`, when it is not a regular file, and with
+  `Unsupported::NotWritable` when the user does not own it, cannot write
+  it, or cannot write to its folder (a folder of the user's own, or one
+  writable by everyone). Flatpak and Snap are refused first, as always.
+- The download is the AppImage itself, verified against the signed
+  checksums like every other download. It takes the running AppImage's
+  permissions and must answer `--version` with `<slug> <version>`.
+- The helper is a copy of the AppImage, since the running executable lives
+  in the AppImage's mount, which goes when the app quits. It backs the
+  AppImage up as `previous` and renames the download over it: the staging
+  folder is beside the AppImage, on the same file system, so anything that
+  starts it meanwhile gets the old file or the new one. A rollback renames
+  `previous` back, since Linux refuses to write into an AppImage that is
+  still running.
+- The relaunched app's receipt matches when `$APPIMAGE` names the installed
+  file.
+- An AppImage unpacked with `--appimage-extract-and-run` (no FUSE) runs from
+  an `appimage_extracted_*` folder. Its version probe, helper and relaunch
+  get `APPIMAGE_EXTRACT_AND_RUN=1`, so they unpack themselves the same way.
+- The download is the whole file. External updaters (AppImageUpdate and
+  those built on it) can do delta updates from the `.zsync` files a release
+  publishes beside its AppImages, through the update information embedded
+  in each; the crate does not read either.
+- Without `appimage: true`, an AppImage is refused with `NotPortable`, as
+  before.
 
 ## Pre-releases
 
@@ -244,9 +289,9 @@ installs reads the receipt. These must not change without a transition:
 | Restart after rollback | `<arguments> --update-error "The update could not start. The previous version has been restored."` |
 | Staging folder | `.<slug>-update-<16 lowercase hex digits>` beside the executable, or beside the bundle on macOS; 0700 |
 | Files in it | `handoff.json`, `ready`, `started`, `result.txt`, `previous`, `helper`/`helper.exe`/`helper.app`, `helper.log`, `installer.log`, `mounted-<hex>`, `failed.app` |
-| `handoff.json` | compact JSON: `{"prepared":{"installation":{"executable":…,"kind":"Portable"\|"WindowsInstaller"\|"MacBundle"},"directory":…,"payload":…,"sha256":…,"version":…},"parent":<pid>,"arguments":[…]}` |
+| `handoff.json` | compact JSON: `{"prepared":{"installation":{"executable":…,"kind":"Portable"\|"WindowsInstaller"\|"MacBundle"\|"AppImage"},"directory":…,"payload":…,"sha256":…,"version":…},"parent":<pid>,"arguments":[…]}`. `AppImage` is newer than the others: only a helper that knows it writes it, and only the newer app it installs reads it back. |
 | Markers | `<name>-portable.txt` containing `<name>-portable-v1`; `<name>-installer.txt` containing `<name>-installer-v1` |
-| Assets | `<slug>-v<version>-<target>.tar.gz` (Linux), `.zip` (Windows portable), `.msi` or else `-setup.exe` (Windows installer), `<slug>-v<version>-macos-universal.dmg` (or `-macos-arm64.dmg` with `MacTarget::Arm64Only`); targets `x86_64`/`aarch64` `-unknown-linux-gnu` and `-pc-windows-msvc` |
+| Assets | `<slug>-v<version>-<target>.tar.gz` (Linux), `.zip` (Windows portable), `.msi` or else `-setup.exe` (Windows installer), `<slug>-v<version>-macos-universal.dmg` (or `-macos-arm64.dmg` with `MacTarget::Arm64Only`), `<slug>-<version>-<arch>.AppImage` (with `appimage: true`; `x86_64`, `aarch64`); targets `x86_64`/`aarch64` `-unknown-linux-gnu` and `-pc-windows-msvc` |
 | Archive layout | `<slug>-v<version>-<target>/<slug>[.exe]`, or `<portable_executable>[.exe]` in place of the second `<slug>` |
 | Checksums | `checksums.txt` in `sha256sum` format; `checksums.txt.sig` is a raw 64-byte Ed25519 signature over its exact bytes |
 | Version probe | `<slug or legacy name> <version>` on standard output |

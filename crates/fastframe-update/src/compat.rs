@@ -295,3 +295,14 @@ fn macos_receipts_are_only_accepted_on_macos() {
         }
     }
 }
+
+/// An AppImage job is the same file with one more `kind`. Only a helper
+/// that knows it writes one, and the app it relaunches is at least as new,
+/// so no older version ever reads it.
+#[test]
+fn an_appimage_job_keeps_the_format() {
+    let text = r#"{"prepared":{"installation":{"executable":"/home/test/Applications/Spotifast.AppImage","kind":"AppImage"},"directory":"/home/test/Applications/.spotifast-update-00000000000000aa","payload":"/home/test/Applications/.spotifast-update-00000000000000aa/spotifast-0.14.0-x86_64.AppImage","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","version":"0.14.0"},"parent":4242,"arguments":[]}"#;
+    let handoff: Handoff = serde_json::from_str(text).unwrap();
+    assert_eq!(handoff.prepared.installation.kind, Kind::AppImage);
+    assert_eq!(serde_json::to_string(&handoff).unwrap(), text);
+}

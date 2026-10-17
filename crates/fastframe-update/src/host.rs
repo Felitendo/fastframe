@@ -52,6 +52,8 @@ pub(crate) trait Host: Send + Sync {
     /// The running executable, canonicalized.
     fn current_exe(&self) -> std::io::Result<PathBuf>;
     fn var(&self, key: &str) -> Option<OsString>;
+    /// The user this process runs as, where the system says (Linux).
+    fn user_id(&self) -> Option<u32>;
     /// Whether `program flag path` succeeds: the package manager owns `path`.
     fn package_owner(&self, program: &str, flag: &str, path: &Path) -> bool;
     /// Writes the archive member `entry` to the new file `destination`.
@@ -125,6 +127,17 @@ mod os {
         let _ = command;
     }
 
+    /// An AppImage started with `--appimage-extract-and-run`, where FUSE is
+    /// missing, runs from a folder the runtime unpacked it to. The helper,
+    /// the version probe and the relaunch are AppImages too, so they are
+    /// asked to unpack themselves the same way, which the runtime reads from
+    /// `APPIMAGE_EXTRACT_AND_RUN`. Everything else starts as before.
+    fn extracted_like_this_one(command: &mut Command) {
+        if super::runs_extracted(std::env::var_os("APPDIR").as_deref()) {
+            command.env("APPIMAGE_EXTRACT_AND_RUN", "1");
+        }
+    }
+
     struct Process(std::process::Child);
 
     impl Child for Process {
@@ -145,6 +158,17 @@ mod os {
 
         fn var(&self, key: &str) -> Option<OsString> {
             std::env::var_os(key)
+        }
+
+        fn user_id(&self) -> Option<u32> {
+            // procfs gives /proc/self the process's effective user.
+            #[cfg(target_os = "linux")]
+            {
+                use std::os::unix::fs::MetadataExt;
+                fs::metadata("/proc/self").ok().map(|proc| proc.uid())
+            }
+            #[cfg(not(target_os = "linux"))]
+            None
         }
 
         fn package_owner(&self, program: &str, flag: &str, path: &Path) -> bool {
@@ -204,6 +228,7 @@ mod os {
 
         fn version_output(&self, executable: &Path) -> Result<String> {
             let mut command = Command::new(executable);
+            extracted_like_this_one(&mut command);
             command
                 .arg("--version")
                 .stdin(Stdio::null())
@@ -247,6 +272,7 @@ mod os {
             log: Option<File>,
         ) -> Result<Box<dyn Child>> {
             let mut command = Command::new(executable);
+            extracted_like_this_one(&mut command);
             command.args(arguments).current_dir(directory);
             if let Some(log) = log {
                 command
@@ -482,6 +508,14 @@ mod os {
     }
 }
 
+/// Whether `$APPDIR` is a folder the AppImage runtime unpacked the app to
+/// (`appimage_extracted_<digest>`), rather than its FUSE mount.
+pub(crate) fn runs_extracted(appdir: Option<&std::ffi::OsStr>) -> bool {
+    appdir
+        .and_then(|appdir| Path::new(appdir).file_name())
+        .is_some_and(|name| name.to_string_lossy().starts_with("appimage_extracted_"))
+}
+
 /// The start time field of `/proc/<pid>/stat`, which tells a process from a
 /// later one that reused its id. The name field may hold spaces and
 /// parentheses, so fields are counted from the last `)`.
@@ -519,6 +553,17 @@ mod tests {
     }
 
     #[cfg(target_os = "linux")]
+    #[test]
+    fn an_extracted_appimage_is_told_from_a_mounted_one() {
+        use std::ffi::OsStr;
+        assert!(runs_extracted(Some(OsStr::new(
+            "/tmp/appimage_extracted_0123456789abcdef0123456789abcdef"
+        ))));
+        assert!(!runs_extracted(Some(OsStr::new("/tmp/.mount_spotifXyZ12"))));
+        assert!(!runs_extracted(Some(OsStr::new("/"))));
+        assert!(!runs_extracted(None));
+    }
+
     #[test]
     fn this_process_has_an_identity() {
         let current =

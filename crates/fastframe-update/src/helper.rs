@@ -41,6 +41,15 @@ pub(crate) fn handoff(
     );
     let helper = match staged.installation.kind {
         Kind::MacBundle => crate::macos::helper(config, host, &staged)?,
+        Kind::AppImage => {
+            // The running executable lives inside the AppImage's mount,
+            // which goes when the app quits, so the helper is a copy of
+            // the AppImage itself.
+            let helper = staged.file("helper");
+            fs::copy(&staged.installation.executable, &helper)
+                .context("Could not prepare the update helper")?;
+            helper
+        }
         Kind::Portable | Kind::WindowsInstaller => {
             // Windows locks a running executable, so the helper cannot be
             // the file it replaces.
@@ -269,6 +278,19 @@ fn replace(config: &UpdateConfig, host: &dyn Host, staged: &Staged) -> Result<Pa
                 return Ok(installed);
             }
         }
+        Kind::AppImage => {
+            stage::backup_current(target, &backup).context("Cannot back up the current app")?;
+            // The staging folder sits beside the AppImage, on the same file
+            // system, so one rename replaces it: whatever starts it
+            // meanwhile gets the old file or the new one, never part of
+            // either. It keeps the permissions the AppImage has now.
+            let permissions = fs::metadata(target)
+                .context("Cannot read the current app")?
+                .permissions();
+            fs::set_permissions(&staged.payload, permissions)
+                .context("Could not prepare the update")?;
+            fs::rename(&staged.payload, target).context("Could not replace the app")?;
+        }
         Kind::WindowsInstaller => {
             stage::backup_current(target, &backup).context("Cannot back up the current app")?;
             let directory = target.parent().context("Missing installation directory")?;
@@ -307,6 +329,14 @@ fn restore(config: &UpdateConfig, staged: &Staged, installed: Option<&Path>) -> 
     }
     let backup = staged.file(PREVIOUS);
     let target = &staged.installation.executable;
+    if staged.installation.kind == Kind::AppImage {
+        // A rename, not a copy: the AppImage that failed may still be
+        // running, and Linux refuses to write into a running executable.
+        if backup.is_file() {
+            fs::rename(&backup, target).context("Could not restore the previous app")?;
+        }
+        return Ok(());
+    }
     if staged.installation.kind == Kind::Portable
         && let Some(renamed) = installed.filter(|installed| installed != target)
     {
@@ -338,8 +368,18 @@ pub(crate) fn acknowledge(config: &UpdateConfig, host: &dyn Host, job: &Path) ->
     staged
         .check_layout(config, job)
         .context("Invalid update receipt")?;
+    // An AppImage runs from its mount; the installation is the file.
+    let running = if staged.installation.kind == Kind::AppImage {
+        PathBuf::from(
+            host.var("APPIMAGE")
+                .context("The updated app is not running from an AppImage")?,
+        )
+        .canonicalize()?
+    } else {
+        host.current_exe()?
+    };
     ensure!(
-        host.current_exe()? == staged.installation.executable.canonicalize()?,
+        running == staged.installation.executable.canonicalize()?,
         "The receipt belongs to a different installation"
     );
     ensure!(
@@ -1117,5 +1157,142 @@ mod tests {
             "{error:#}"
         );
         assert!(!staged.file(STARTED).exists());
+    }
+
+    /// An installed AppImage and a staged, hashed replacement. The app runs
+    /// from inside the AppImage's mount, so the running executable is
+    /// another file.
+    fn staged_appimage(root: &Path) -> Staged {
+        let appimage = root.join("Spotifast.AppImage");
+        fs::write(&appimage, b"old appimage").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&appimage, fs::Permissions::from_mode(0o750)).unwrap();
+        }
+        let installation = Installation {
+            executable: appimage.canonicalize().unwrap(),
+            kind: Kind::AppImage,
+        };
+        let directory = stage::staging(&ZAPFAST, &installation).unwrap();
+        let payload = directory.join("zapfast-0.17.0-x86_64.AppImage");
+        fs::write(&payload, b"new appimage").unwrap();
+        Staged {
+            sha256: stage::hash(&payload).unwrap(),
+            installation,
+            directory,
+            payload,
+            version: "0.17.0".into(),
+        }
+    }
+
+    #[test]
+    fn an_appimages_helper_is_a_copy_of_the_appimage() {
+        let root = tempfile::tempdir().unwrap();
+        let staged = staged_appimage(root.path());
+        let mounted = root.path().join(".mount_spotif/usr/bin/spotifast");
+        fs::create_dir_all(mounted.parent().unwrap()).unwrap();
+        fs::write(&mounted, b"the program inside").unwrap();
+        let host = FakeHost::default()
+            .with_current_exe(&mounted)
+            .on_spawn(Behaviour::WriteReady);
+        handoff(&ZAPFAST, &host, prepared(staged.clone()), Vec::new()).unwrap();
+        let helper = staged.file("helper");
+        assert_eq!(fs::read(&helper).unwrap(), b"old appimage");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(&helper).unwrap().permissions().mode() & 0o777,
+                0o750,
+                "the helper runs"
+            );
+        }
+        assert_eq!(host.spawned()[0].executable, helper);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn an_appimage_is_renamed_into_place_and_rolled_back_by_rename() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        for acknowledges in [true, false] {
+            let root = tempfile::tempdir().unwrap();
+            let staged = staged_appimage(root.path());
+            let target = &staged.installation.executable;
+            let inode = fs::metadata(&staged.payload).unwrap().ino();
+            let job = write_job(&staged);
+            let host = FakeHost::default().on_spawn(if acknowledges {
+                Behaviour::Acknowledge
+            } else {
+                Behaviour::Exit(false)
+            });
+            let result = run(&ZAPFAST, &host, &job);
+            let spawned = host.spawned();
+            assert_eq!(spawned[0].executable, *target, "the AppImage relaunches");
+            assert_eq!(Some(spawned[0].directory.as_path()), target.parent());
+            if acknowledges {
+                result.unwrap();
+                assert_eq!(fs::read(target).unwrap(), b"new appimage");
+                assert_eq!(
+                    fs::metadata(target).unwrap().ino(),
+                    inode,
+                    "the download itself, renamed over the AppImage"
+                );
+                assert_eq!(
+                    fs::metadata(target).unwrap().permissions().mode() & 0o777,
+                    0o750
+                );
+                assert_eq!(fs::read(staged.file(PREVIOUS)).unwrap(), b"old appimage");
+                assert_eq!(
+                    fs::read_to_string(staged.file(RESULT)).unwrap(),
+                    "Updated to 0.17.0"
+                );
+            } else {
+                assert!(result.is_err());
+                assert_eq!(fs::read(target).unwrap(), b"old appimage");
+                assert_eq!(
+                    fs::metadata(target).unwrap().permissions().mode() & 0o777,
+                    0o750
+                );
+                assert_eq!(spawned.len(), 2);
+                assert_eq!(spawned[1].executable, *target);
+                assert!(
+                    spawned[1]
+                        .arguments
+                        .contains(&OsString::from("--update-error"))
+                );
+            }
+            // Nothing but the AppImage and its staging folder.
+            assert_eq!(fs::read_dir(root.path()).unwrap().count(), 2);
+        }
+    }
+
+    /// The relaunched app runs from the AppImage's mount: the receipt is
+    /// for it when `$APPIMAGE` names the installed file.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn an_appimage_receipt_is_matched_by_its_file() {
+        let root = tempfile::tempdir().unwrap();
+        let staged = staged_appimage(root.path());
+        let job = write_job(&staged);
+        let mounted = root.path().join("inside");
+        fs::write(&mounted, b"x").unwrap();
+        let without = FakeHost::default().with_current_exe(&mounted);
+        assert!(acknowledge(&NEXT, &without, &job).is_err());
+        let other = root.path().join("Other.AppImage");
+        fs::write(&other, b"x").unwrap();
+        let elsewhere = FakeHost::default()
+            .with_current_exe(&mounted)
+            .with_var("APPIMAGE", other.as_os_str());
+        let error = acknowledge(&NEXT, &elsewhere, &job).unwrap_err();
+        assert!(
+            error.to_string().contains("different installation"),
+            "{error:#}"
+        );
+        let host = FakeHost::default()
+            .with_current_exe(&mounted)
+            .with_var("APPIMAGE", staged.installation.executable.as_os_str());
+        acknowledge(&NEXT, &host, &job).unwrap();
+        assert_eq!(fs::read_to_string(staged.file(STARTED)).unwrap(), "0.17.0");
     }
 }

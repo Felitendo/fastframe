@@ -9,6 +9,7 @@
 //! | --- | --- | --- |
 //! | `<asset name>` | download | the verified package; kept for the installer and disk image |
 //! | `<slug>` or `<slug>.exe` (or the configured portable executable) | download | the unpacked portable executable |
+//! | `<slug>-<version>-<arch>.AppImage` | download | the verified AppImage, renamed over the installed one |
 //! | `helper`, `helper.exe`, `helper.app` | handoff | the copy of the running app that installs |
 //! | `handoff.json` | handoff, helper | the job, and later the relaunched app's receipt |
 //! | `helper.log` | helper | the helper's standard error |
@@ -399,6 +400,9 @@ impl Staged {
         );
         if self.installation.kind == Kind::MacBundle {
             ensure!(cfg!(target_os = "macos"), "This update is for macOS");
+        }
+        if self.installation.kind == Kind::AppImage {
+            ensure!(cfg!(target_os = "linux"), "This update is for Linux");
         }
         Ok(())
     }

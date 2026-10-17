@@ -22,6 +22,14 @@ pub enum Kind {
     WindowsInstaller,
     /// A macOS app bundle from the disk image, outside Homebrew.
     MacBundle,
+    /// A Linux AppImage, with [`UpdateConfig::appimage`] on. The
+    /// installation's executable is the AppImage file itself (`$APPIMAGE`),
+    /// not the program running from inside it, and an update replaces that
+    /// file with the release's `<slug>-<version>-<arch>.AppImage`.
+    ///
+    /// Only a helper that knows this variant ever writes it, and only an
+    /// app at least as new reads it back as a receipt.
+    AppImage,
 }
 
 /// An installation that can update itself. The shape is part of
@@ -94,6 +102,9 @@ pub enum Unsupported {
     MoveToApplications,
     /// A macOS bundle whose identifier or executable is not this app's.
     ForeignBundle,
+    /// An AppImage that the user does not own, or that sits in a folder
+    /// the user cannot write to, so it cannot be replaced.
+    NotWritable,
     /// No download exists for this operating system or processor.
     Platform,
     /// The installation could not be inspected.
@@ -126,6 +137,9 @@ impl std::fmt::Display for Unsupported {
             Self::ForeignBundle => {
                 formatter.write_str("This app bundle is not a release of this app.")
             }
+            Self::NotWritable => formatter.write_str(
+                "This AppImage cannot be replaced from here. Move it to a folder of your own, such as ~/Applications, or use the download page.",
+            ),
             Self::Platform => formatter
                 .write_str("Use the download page for this operating system or architecture."),
             Self::Unavailable(reason) => {
@@ -197,6 +211,12 @@ pub(crate) fn detect(
             found(Kind::MacBundle)
         }
         Platform::Linux | Platform::Windows => {
+            if platform == Platform::Linux
+                && config.appimage
+                && let Some(appimage) = running_appimage(host, executable)
+            {
+                return detect_appimage(host, &appimage);
+            }
             if platform == Platform::Linux {
                 for (program, flag, manager) in [
                     ("dpkg-query", "-S", PackageManager::Apt),
@@ -230,6 +250,91 @@ pub(crate) fn detect(
         }
         Platform::Other => Err(Unsupported::Platform),
     }
+}
+
+/// The AppImage this process runs from: `$APPIMAGE`, when `$APPDIR` (the
+/// AppImage's mount point or extracted folder) holds the running
+/// executable. A program that an AppImage merely started inherits both
+/// variables but runs from elsewhere, so it never takes the other
+/// AppImage for its own.
+fn running_appimage(host: &dyn Host, executable: &Path) -> Option<PathBuf> {
+    let appimage = PathBuf::from(host.var("APPIMAGE")?);
+    let appdir = PathBuf::from(host.var("APPDIR")?);
+    if !appimage.is_absolute() || !appdir.is_absolute() {
+        return None;
+    }
+    let appdir = appdir.canonicalize().unwrap_or(appdir);
+    executable.starts_with(&appdir).then_some(appimage)
+}
+
+/// Whether the AppImage at `path` may replace itself: no package manager
+/// owns it, it is not in a system directory, it is a regular file the user
+/// owns and can write, in a folder the user can write to (the update is
+/// staged there and renamed over it).
+fn detect_appimage(host: &dyn Host, path: &Path) -> Result<Installation, Unsupported> {
+    for (program, flag, manager) in [
+        ("dpkg-query", "-S", PackageManager::Apt),
+        ("rpm", "-qf", PackageManager::Dnf),
+        ("pacman", "-Qo", PackageManager::Pacman),
+    ] {
+        if host.package_owner(program, flag, path) {
+            return Err(Unsupported::SystemPackage(manager));
+        }
+    }
+    let text = path.to_string_lossy();
+    if ["/usr/", "/bin/", "/sbin/"]
+        .iter()
+        .any(|prefix| text.starts_with(prefix))
+    {
+        return Err(Unsupported::SystemDirectory);
+    }
+    let metadata =
+        fs::symlink_metadata(path).map_err(|error| Unsupported::Unavailable(error.to_string()))?;
+    if !metadata.is_file() {
+        return Err(Unsupported::Unavailable(
+            "The AppImage is not a regular file".into(),
+        ));
+    }
+    let directory = path.parent().ok_or(Unsupported::NotWritable)?;
+    let user = host
+        .user_id()
+        .ok_or_else(|| Unsupported::Unavailable("Cannot tell which user runs the app".into()))?;
+    match (owner_and_mode(path), owner_and_mode(directory)) {
+        (Some(file), Some(folder)) if may_replace(user, file, folder) => Ok(Installation {
+            executable: path.to_owned(),
+            kind: Kind::AppImage,
+        }),
+        _ => Err(Unsupported::NotWritable),
+    }
+}
+
+/// The owner and permission bits of `path`, following symbolic links (the
+/// folder may be one). Only Unix has them.
+fn owner_and_mode(path: &Path) -> Option<(u32, u32)> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        fs::metadata(path)
+            .ok()
+            .map(|metadata| (metadata.uid(), metadata.mode()))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        None
+    }
+}
+
+/// Whether `user` may replace a file with `file`'s owner and mode in a
+/// folder with `folder`'s: the user owns the file and may write it, and
+/// owns a writable folder or the folder is writable by everyone. Group
+/// permissions are not considered, so a shared folder counts as read-only.
+fn may_replace(user: u32, file: (u32, u32), folder: (u32, u32)) -> bool {
+    let (file_owner, file_mode) = file;
+    let (folder_owner, folder_mode) = folder;
+    file_owner == user
+        && file_mode & 0o200 != 0
+        && ((folder_owner == user && folder_mode & 0o300 == 0o300) || folder_mode & 0o003 == 0o003)
 }
 
 /// Whether a portable copy is the app the archive installs. With
@@ -635,8 +740,243 @@ mod tests {
             (Kind::Portable, "\"Portable\""),
             (Kind::WindowsInstaller, "\"WindowsInstaller\""),
             (Kind::MacBundle, "\"MacBundle\""),
+            (Kind::AppImage, "\"AppImage\""),
         ] {
             assert_eq!(serde_json::to_string(&kind).unwrap(), name);
         }
+    }
+
+    const APPIMAGES: UpdateConfig = UpdateConfig {
+        appimage: true,
+        ..SPOTIFAST
+    };
+
+    /// An AppImage at `folder/Spotifast.AppImage`, mounted at
+    /// `folder/.mount_spotif` with the app at `usr/bin/spotifast` inside,
+    /// as the runtime starts it.
+    #[cfg(unix)]
+    struct MountedAppImage {
+        folder: tempfile::TempDir,
+        appimage: PathBuf,
+        mount: PathBuf,
+        executable: PathBuf,
+    }
+
+    #[cfg(unix)]
+    impl MountedAppImage {
+        fn new() -> Self {
+            let folder = tempfile::tempdir().unwrap();
+            let root = folder.path().canonicalize().unwrap();
+            let appimage = root.join("Spotifast.AppImage");
+            fs::write(&appimage, b"appimage").unwrap();
+            let mount = root.join(".mount_spotif");
+            let executable = mount.join("usr/bin/spotifast");
+            fs::create_dir_all(executable.parent().unwrap()).unwrap();
+            fs::write(&executable, b"app").unwrap();
+            Self {
+                folder,
+                appimage,
+                mount,
+                executable,
+            }
+        }
+
+        fn user(&self) -> u32 {
+            use std::os::unix::fs::MetadataExt;
+            fs::metadata(&self.appimage).unwrap().uid()
+        }
+
+        /// The variables the runtime sets for `appimage`, run by `user`.
+        fn host_for(&self, appimage: &Path, user: Option<u32>) -> FakeHost {
+            let host = FakeHost::default()
+                .with_var("APPIMAGE", appimage.as_os_str())
+                .with_var("APPDIR", self.mount.as_os_str());
+            match user {
+                Some(user) => host.with_user_id(user),
+                None => host,
+            }
+        }
+
+        /// As the runtime starts this AppImage for the user who owns it.
+        fn host(&self) -> FakeHost {
+            self.host_for(&self.appimage, Some(self.user()))
+        }
+
+        fn detect(
+            &self,
+            config: &UpdateConfig,
+            host: &FakeHost,
+        ) -> Result<Installation, Unsupported> {
+            detect(config, host, Platform::Linux, &self.executable)
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_appimage_the_user_owns_updates_itself_as_the_file() {
+        let mounted = MountedAppImage::new();
+        let host = mounted.host();
+        assert_eq!(
+            mounted.detect(&APPIMAGES, &host),
+            Ok(Installation {
+                executable: mounted.appimage.clone(),
+                kind: Kind::AppImage,
+            })
+        );
+        // The package managers are asked about the AppImage, not the
+        // program inside its mount.
+        let appimage = mounted.appimage.display();
+        assert_eq!(
+            host.package_queries(),
+            [
+                format!("dpkg-query -S {appimage}"),
+                format!("rpm -qf {appimage}"),
+                format!("pacman -Qo {appimage}"),
+            ]
+        );
+        // Without the setting an AppImage is refused as before.
+        assert_eq!(
+            mounted.detect(&SPOTIFAST, &mounted.host()),
+            Err(Unsupported::NotPortable)
+        );
+        // Unpacked with --appimage-extract-and-run, it is the same.
+        let extracted = mounted
+            .folder
+            .path()
+            .canonicalize()
+            .unwrap()
+            .join("appimage_extracted_00ff");
+        let executable = extracted.join("usr/bin/spotifast");
+        fs::create_dir_all(executable.parent().unwrap()).unwrap();
+        fs::write(&executable, b"app").unwrap();
+        let host = FakeHost::default()
+            .with_var("APPIMAGE", mounted.appimage.as_os_str())
+            .with_var("APPDIR", extracted.as_os_str())
+            .with_user_id(mounted.user());
+        assert_eq!(
+            detect(&APPIMAGES, &host, Platform::Linux, &executable)
+                .unwrap()
+                .kind,
+            Kind::AppImage
+        );
+        // AppImages are a Linux format.
+        assert_eq!(
+            detect(
+                &APPIMAGES,
+                &mounted.host(),
+                Platform::Windows,
+                &mounted.executable
+            ),
+            Err(Unsupported::NotPortable)
+        );
+    }
+
+    /// A program an AppImage started inherits `$APPIMAGE` and `$APPDIR`,
+    /// but runs from elsewhere: it must not replace the other AppImage.
+    #[cfg(unix)]
+    #[test]
+    fn a_program_an_appimage_started_does_not_take_it_for_its_own() {
+        let mounted = MountedAppImage::new();
+        let portable = tempfile::tempdir().unwrap();
+        let executable = portable.path().join("spotifast");
+        fs::write(&executable, b"app").unwrap();
+        assert_eq!(
+            detect(&APPIMAGES, &mounted.host(), Platform::Linux, &executable),
+            Err(Unsupported::NotPortable)
+        );
+        // With its marker it is the portable copy it is.
+        fs::write(
+            portable.path().join("spotifast-portable.txt"),
+            "spotifast-portable-v1",
+        )
+        .unwrap();
+        assert_eq!(
+            detect(&APPIMAGES, &mounted.host(), Platform::Linux, &executable).unwrap(),
+            Installation {
+                executable,
+                kind: Kind::Portable
+            }
+        );
+        // A relative path is not one the runtime sets.
+        let host = mounted.host_for(Path::new("Spotifast.AppImage"), Some(mounted.user()));
+        assert_eq!(
+            mounted.detect(&APPIMAGES, &host),
+            Err(Unsupported::NotPortable)
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_appimage_someone_else_owns_or_cannot_write_is_refused() {
+        use std::os::unix::fs::PermissionsExt;
+        let mounted = MountedAppImage::new();
+        let someone_else = mounted.host_for(&mounted.appimage, Some(mounted.user() + 1));
+        assert_eq!(
+            mounted.detect(&APPIMAGES, &someone_else),
+            Err(Unsupported::NotWritable)
+        );
+        fs::set_permissions(&mounted.appimage, fs::Permissions::from_mode(0o555)).unwrap();
+        assert_eq!(
+            mounted.detect(&APPIMAGES, &mounted.host()),
+            Err(Unsupported::NotWritable)
+        );
+        fs::set_permissions(&mounted.appimage, fs::Permissions::from_mode(0o755)).unwrap();
+        let folder = mounted.appimage.parent().unwrap();
+        fs::set_permissions(folder, fs::Permissions::from_mode(0o555)).unwrap();
+        let read_only = mounted.detect(&APPIMAGES, &mounted.host());
+        fs::set_permissions(folder, fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(read_only, Err(Unsupported::NotWritable));
+        // A link to an AppImage is not the file to replace.
+        let link = folder.join("link.AppImage");
+        std::os::unix::fs::symlink(&mounted.appimage, &link).unwrap();
+        assert!(matches!(
+            mounted.detect(&APPIMAGES, &mounted.host_for(&link, Some(mounted.user()))),
+            Err(Unsupported::Unavailable(_))
+        ));
+        // Without a user to compare with, nothing is replaced.
+        assert!(matches!(
+            mounted.detect(&APPIMAGES, &mounted.host_for(&mounted.appimage, None)),
+            Err(Unsupported::Unavailable(_))
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_packaged_or_system_appimage_is_left_to_its_owner() {
+        let mounted = MountedAppImage::new();
+        let host = mounted.host().owned_by("pacman");
+        assert_eq!(
+            mounted.detect(&APPIMAGES, &host),
+            Err(Unsupported::SystemPackage(PackageManager::Pacman))
+        );
+        let host = mounted.host_for(
+            Path::new("/usr/bin/spotifast.AppImage"),
+            Some(mounted.user()),
+        );
+        assert_eq!(
+            mounted.detect(&APPIMAGES, &host),
+            Err(Unsupported::SystemDirectory)
+        );
+        let host = mounted
+            .host()
+            .with_var("FLATPAK_ID", "rocks.spotifast.Spotifast");
+        assert_eq!(mounted.detect(&APPIMAGES, &host), Err(Unsupported::Flatpak));
+    }
+
+    #[test]
+    fn replacing_needs_the_file_and_a_writable_folder() {
+        let me = 1000;
+        assert!(may_replace(me, (me, 0o755), (me, 0o755)));
+        assert!(may_replace(me, (me, 0o700), (me, 0o700)));
+        // Someone else's file, or one without write permission.
+        assert!(!may_replace(me, (0, 0o777), (me, 0o755)));
+        assert!(!may_replace(me, (me, 0o555), (me, 0o755)));
+        // A folder the user cannot add to or rename in.
+        assert!(!may_replace(me, (me, 0o755), (me, 0o555)));
+        assert!(!may_replace(me, (me, 0o755), (me, 0o655)));
+        assert!(!may_replace(me, (me, 0o755), (0, 0o755)));
+        assert!(!may_replace(me, (me, 0o755), (0, 0o775)));
+        // A folder open to everyone, such as /tmp with its sticky bit.
+        assert!(may_replace(me, (me, 0o755), (0, 0o1777)));
     }
 }

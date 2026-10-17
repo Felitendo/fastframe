@@ -145,6 +145,7 @@ pub(crate) type Repointed = (Vec<PathBuf>, PathBuf, PathBuf);
 pub(crate) struct FakeHost {
     current_exe: Option<PathBuf>,
     vars: HashMap<String, OsString>,
+    user_id: Option<u32>,
     owners: Vec<String>,
     queries: Mutex<Vec<String>>,
     entries: HashMap<String, Vec<u8>>,
@@ -171,6 +172,7 @@ impl Default for FakeHost {
         Self {
             current_exe: None,
             vars: HashMap::new(),
+            user_id: None,
             owners: Vec::new(),
             queries: Mutex::default(),
             entries: HashMap::new(),
@@ -202,6 +204,11 @@ impl FakeHost {
 
     pub(crate) fn with_var(mut self, key: &str, value: impl Into<OsString>) -> Self {
         self.vars.insert(key.to_owned(), value.into());
+        self
+    }
+
+    pub(crate) fn with_user_id(mut self, user: u32) -> Self {
+        self.user_id = Some(user);
         self
     }
 
@@ -352,6 +359,10 @@ impl Host for FakeHost {
 
     fn var(&self, key: &str) -> Option<OsString> {
         self.vars.get(key).cloned()
+    }
+
+    fn user_id(&self) -> Option<u32> {
+        self.user_id
     }
 
     fn package_owner(&self, program: &str, flag: &str, path: &Path) -> bool {

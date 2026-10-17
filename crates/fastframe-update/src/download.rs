@@ -58,7 +58,13 @@ pub(crate) fn download(
     let target = release::target(platform, arch, config.mac_target)?;
     let metadata = release::metadata(config, transport, source, &release.version)?;
     let stem = release::stem(config, &release.version, target);
-    let mut name = release::asset_name(&stem, installation.kind, platform);
+    let mut name = release::asset_name(
+        config,
+        &release.version,
+        target,
+        installation.kind,
+        platform,
+    );
     // A release that ships a Windows Installer package installs through it;
     // older releases only have the setup program.
     if installation.kind == Kind::WindowsInstaller {
@@ -180,6 +186,13 @@ pub(crate) fn download(
                 archive
             }
             Kind::WindowsInstaller => archive,
+            Kind::AppImage => {
+                // The replacement keeps the running AppImage's permissions.
+                let permissions = fs::metadata(&installation.executable)?.permissions();
+                fs::set_permissions(&archive, permissions)?;
+                check_version(config, host, &archive, &release.version)?;
+                archive
+            }
             Kind::Portable => {
                 let executable = release::portable_executable(config, platform);
                 let payload = directory.join(&executable);
@@ -290,7 +303,7 @@ mod tests {
             if self.msi {
                 release::msi_name(&stem)
             } else {
-                release::asset_name(&stem, self.kind, self.platform)
+                release::asset_name(&ZAPFAST, self.version, target, self.kind, self.platform)
             }
         }
 
@@ -1148,5 +1161,104 @@ mod tests {
         assert!(reports.len() >= 4, "{reports:?}");
         assert_eq!(reports.last(), Some(&(total, total)));
         assert!(reports.windows(2).all(|pair| pair[0].0 < pair[1].0));
+    }
+
+    /// An AppImage downloads as the release's AppImage, verified against
+    /// the signed checksums, probed, and staged with the running
+    /// AppImage's permissions.
+    #[test]
+    fn an_appimage_downloads_the_releases_appimage_for_its_processor() {
+        for (arch, name) in [
+            ("x86_64", "zapfast-0.17.0-x86_64.AppImage"),
+            ("aarch64", "zapfast-0.17.0-aarch64.AppImage"),
+        ] {
+            let directory = tempfile::tempdir().unwrap();
+            let executable = directory.path().join("ZapFast.AppImage");
+            fs::write(&executable, b"the running appimage").unwrap();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                fs::set_permissions(&executable, fs::Permissions::from_mode(0o750)).unwrap();
+            }
+            let fixture = Fixture {
+                kind: Kind::AppImage,
+                arch,
+                package: b"new appimage".to_vec(),
+                ..Fixture::default()
+            };
+            assert_eq!(fixture.name(), name);
+            let host = FakeHost::default().with_version_output("zapfast 0.17.0");
+            let transport = fixture.transport();
+            let prepared = download(
+                &Inputs {
+                    config: &config(),
+                    transport: &transport,
+                    source: &Source::github(),
+                    host: &host,
+                    platform: Platform::Linux,
+                    arch,
+                },
+                Installation {
+                    executable: executable.clone(),
+                    kind: Kind::AppImage,
+                },
+                &Release {
+                    version: VERSION.into(),
+                    url: String::new(),
+                },
+                |_, _| {},
+            )
+            .unwrap();
+            let staged = &prepared.staged;
+            assert_eq!(staged.payload, staged.directory.join(name));
+            assert_eq!(fs::read(&staged.payload).unwrap(), b"new appimage");
+            assert_eq!(staged.sha256, hex(&Sha256::digest(b"new appimage")));
+            assert_eq!(host.version_probes(), std::slice::from_ref(&staged.payload));
+            assert!(transport.requested().contains(&asset_url(VERSION, name)));
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                assert_eq!(
+                    fs::metadata(&staged.payload).unwrap().permissions().mode() & 0o777,
+                    0o750
+                );
+            }
+            assert_eq!(
+                fs::read(&executable).unwrap(),
+                b"the running appimage",
+                "nothing is replaced before the handoff"
+            );
+        }
+    }
+
+    #[test]
+    fn an_appimage_that_fails_its_checks_leaves_nothing_behind() {
+        for (listed, version) in [
+            (Some("0".repeat(64)), "zapfast 0.17.0"),
+            (None, "zapfast 0.16.3"),
+        ] {
+            let directory = tempfile::tempdir().unwrap();
+            let executable = directory.path().join("zapfast");
+            fs::write(&executable, b"the running app").unwrap();
+            let fixture = Fixture {
+                kind: Kind::AppImage,
+                listed_digest: listed,
+                ..Fixture::default()
+            };
+            let host = FakeHost::default().with_version_output(version);
+            assert!(
+                run(
+                    &fixture,
+                    &config(),
+                    &host,
+                    Installation {
+                        executable,
+                        kind: Kind::AppImage,
+                    },
+                )
+                .is_err()
+            );
+            untouched(directory.path());
+        }
     }
 }

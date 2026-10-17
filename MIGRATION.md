@@ -979,6 +979,31 @@ the name its release workflow already uses, and refuses an x86_64 copy with
   `solco-v<version>-x86_64-pc-windows-msvc-setup.exe`. Rename it in
   the release workflow before installer copies are meant to update.
 
+### AppImages (any app)
+
+An AppImage refuses to update itself (`NotPortable`) until the app sets
+`appimage: true` in its `UpdateConfig`. Turn it on only once the release
+lists its AppImages in the signed `checksums.txt`:
+
+- Build `<slug>-<version>-<arch>.AppImage` (`x86_64`, `aarch64`; the name
+  native-packages gives it) before the release is published, in the release
+  workflow's build jobs, as the Windows Installer packages are, and put it
+  in the folder whose files `checksums.txt` lists and `checksums.txt.sig`
+  signs. An AppImage built afterwards by the packaging workflow lands in
+  `packaging-checksums.txt`, which is not signed, and an app that carries a
+  publisher key refuses it.
+- Keep those AppImages out of the packaging workflow's targets, so the
+  release has one of each.
+- `--version` must print `<slug> <version>` from the AppImage, as from the
+  archive's executable: the updater runs the downloaded AppImage once
+  before it installs it.
+- Translate `Unsupported::NotWritable`, which an AppImage the user cannot
+  replace reports.
+
+Copies started from an earlier release's AppImage keep using the download
+page: their updater does not know AppImages. Their next manual download is
+the last.
+
 ### Deleted lines, both apps
 
 About 3,950 lines of updater code and tests leave the two apps, replaced by

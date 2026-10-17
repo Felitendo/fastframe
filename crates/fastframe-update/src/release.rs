@@ -224,14 +224,31 @@ pub(crate) fn stem(config: &UpdateConfig, version: &str, target: &str) -> String
     format!("{}-v{version}-{target}", config.slug)
 }
 
-/// The asset to download for this kind of installation.
-pub(crate) fn asset_name(stem: &str, kind: Kind, platform: Platform) -> String {
+/// The asset to download for this kind of installation, for the release
+/// `version` and the [`target`].
+pub(crate) fn asset_name(
+    config: &UpdateConfig,
+    version: &str,
+    target: &str,
+    kind: Kind,
+    platform: Platform,
+) -> String {
+    let stem = stem(config, version, target);
     match kind {
+        Kind::AppImage => appimage_name(config, version, target),
         Kind::MacBundle => format!("{stem}.dmg"),
         Kind::WindowsInstaller => format!("{stem}-setup.exe"),
         Kind::Portable if platform == Platform::Windows => format!("{stem}.zip"),
         Kind::Portable => format!("{stem}.tar.gz"),
     }
+}
+
+/// `<slug>-<version>-<arch>.AppImage`: the name native-packages gives an
+/// AppImage, without the `v` and with the processor alone (`x86_64`,
+/// `aarch64`) where the other downloads carry the whole target.
+pub(crate) fn appimage_name(config: &UpdateConfig, version: &str, target: &str) -> String {
+    let arch = target.split('-').next().unwrap_or(target);
+    format!("{}-{version}-{arch}.AppImage", config.slug)
 }
 
 /// The Windows Installer package a release publishes beside the setup
@@ -522,33 +539,37 @@ mod tests {
         let stem = stem(&ZAPFAST, "0.17.0", target);
         assert_eq!(stem, "zapfast-v0.17.0-x86_64-unknown-linux-gnu");
         assert_eq!(
-            asset_name(&stem, Kind::Portable, Platform::Linux),
+            asset_name(&ZAPFAST, "0.17.0", target, Kind::Portable, Platform::Linux),
             "zapfast-v0.17.0-x86_64-unknown-linux-gnu.tar.gz"
         );
-        let stem = super::stem(
-            &ZAPFAST,
-            "0.17.0",
-            super::target(Platform::Windows, "aarch64", MacTarget::Universal).unwrap(),
-        );
+        let windows = super::target(Platform::Windows, "aarch64", MacTarget::Universal).unwrap();
         assert_eq!(
-            asset_name(&stem, Kind::Portable, Platform::Windows),
+            asset_name(
+                &ZAPFAST,
+                "0.17.0",
+                windows,
+                Kind::Portable,
+                Platform::Windows
+            ),
             "zapfast-v0.17.0-aarch64-pc-windows-msvc.zip"
         );
         assert_eq!(
-            asset_name(&stem, Kind::WindowsInstaller, Platform::Windows),
+            asset_name(
+                &ZAPFAST,
+                "0.17.0",
+                windows,
+                Kind::WindowsInstaller,
+                Platform::Windows
+            ),
             "zapfast-v0.17.0-aarch64-pc-windows-msvc-setup.exe"
         );
         assert_eq!(
-            msi_name(&stem),
+            msi_name(&super::stem(&ZAPFAST, "0.17.0", windows)),
             "zapfast-v0.17.0-aarch64-pc-windows-msvc.msi"
         );
-        let stem = super::stem(
-            &ZAPFAST,
-            "0.17.0",
-            super::target(Platform::MacOs, "x86_64", MacTarget::Universal).unwrap(),
-        );
+        let mac = super::target(Platform::MacOs, "x86_64", MacTarget::Universal).unwrap();
         assert_eq!(
-            asset_name(&stem, Kind::MacBundle, Platform::MacOs),
+            asset_name(&ZAPFAST, "0.17.0", mac, Kind::MacBundle, Platform::MacOs),
             "zapfast-v0.17.0-macos-universal.dmg"
         );
         assert_eq!(
@@ -579,7 +600,9 @@ mod tests {
         let solco = UpdateConfig::new("crmne/solco-releases", "Solco", "solco", "0.5.0-alpha.2");
         assert_eq!(
             asset_name(
-                &stem(&solco, "0.5.0-alpha.3", target),
+                &solco,
+                "0.5.0-alpha.3",
+                target,
                 Kind::MacBundle,
                 Platform::MacOs
             ),
@@ -648,13 +671,38 @@ mod tests {
             (Platform::Windows, "aarch64", Kind::WindowsInstaller),
             (Platform::MacOs, "aarch64", Kind::MacBundle),
         ] {
-            let stem = stem(
-                &SPOTIFAST,
-                "0.10.1",
-                target(platform, arch, SPOTIFAST.mac_target).unwrap(),
-            );
-            let name = asset_name(&stem, kind, platform);
+            let target = target(platform, arch, SPOTIFAST.mac_target).unwrap();
+            let name = asset_name(&SPOTIFAST, "0.10.1", target, kind, platform);
             assert!(checksum(text, &name).is_ok(), "{name}");
         }
+    }
+
+    /// native-packages names AppImages `<name>-<version>-<arch>.AppImage`,
+    /// as Spotifast 0.13.3 published them.
+    #[test]
+    fn appimages_are_named_as_native_packages_names_them() {
+        const SPOTIFAST: UpdateConfig =
+            UpdateConfig::new("crmne/spotifast", "Spotifast", "spotifast", "0.13.2");
+        for (arch, name) in [
+            ("x86_64", "spotifast-0.13.3-x86_64.AppImage"),
+            ("aarch64", "spotifast-0.13.3-aarch64.AppImage"),
+        ] {
+            let target = target(Platform::Linux, arch, MacTarget::Universal).unwrap();
+            assert_eq!(
+                asset_name(
+                    &SPOTIFAST,
+                    "0.13.3",
+                    target,
+                    Kind::AppImage,
+                    Platform::Linux
+                ),
+                name
+            );
+        }
+        let target = target(Platform::Linux, "x86_64", MacTarget::Universal).unwrap();
+        assert_eq!(
+            appimage_name(&SPOTIFAST, "0.14.0-rc.1", target),
+            "spotifast-0.14.0-rc.1-x86_64.AppImage"
+        );
     }
 }

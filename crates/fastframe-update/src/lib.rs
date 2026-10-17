@@ -54,7 +54,9 @@
 //! 2. [`Updater::installation`] decides whether this copy may replace itself.
 //!    Package-manager installs (Flatpak, Snap, apt, dnf, pacman, Nix,
 //!    Homebrew, cargo) are refused with an [`Unsupported`] reason, as is any
-//!    Linux or Windows copy without a portable or installer marker file.
+//!    Linux or Windows copy without a portable or installer marker file. An
+//!    AppImage the user owns may update itself when the app opts in with
+//!    [`UpdateConfig::appimage`].
 //! 3. [`Updater::download`] fetches `checksums.txt`, verifies its Ed25519
 //!    signature (`checksums.txt.sig`) against the embedded publisher key,
 //!    downloads the package into a fresh staging folder beside the app and
@@ -175,6 +177,16 @@ pub struct UpdateConfig {
     /// Which macOS disk image a release carries. The default,
     /// [`MacTarget::Universal`], is `<slug>-v<version>-macos-universal.dmg`.
     pub mac_target: MacTarget,
+    /// Whether a Linux AppImage updates itself. The release must list
+    /// `<slug>-<version>-<arch>.AppImage` (`x86_64` or `aarch64`, the name
+    /// native-packages gives it) in the signed `checksums.txt`, beside the
+    /// other downloads. A copy started from an AppImage (`$APPIMAGE`) that
+    /// the user owns and can write to then downloads that file, checks it
+    /// like any other download, and replaces the AppImage in place. The
+    /// default, `false`, keeps refusing AppImages with
+    /// [`Unsupported::NotPortable`], for apps whose AppImage is not in the
+    /// signed checksums yet.
+    pub appimage: bool,
 }
 
 /// The macOS build a release publishes, which names its disk image.
@@ -234,6 +246,7 @@ impl UpdateConfig {
             additional_publisher_keys: &[],
             prereleases: Prereleases::Never,
             mac_target: MacTarget::Universal,
+            appimage: false,
         }
     }
 

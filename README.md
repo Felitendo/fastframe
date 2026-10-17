@@ -50,7 +50,7 @@ written for one of those apps first and moved here once another app needed it.
 | [`fastframe-file`](crates/fastframe-file) | Replaces a file without ever leaving it half written: a temporary file beside it, flushed, then moved over it, privately if asked, on a thread of its own so the window never waits for the disk. |
 | [`fastframe-desktop`](crates/fastframe-desktop) | Who the app is to the desktop and what it says: the desktop entry a Flatpak exports, whether the session is GNOME, a desktop setting read through the portal (no `gsettings` process), and macOS notification permission guarded by the real application bundle. |
 | [`fastframe-notifications`](crates/fastframe-notifications) | Native notifications for GUI apps, TUIs and daemons: bounded delivery, click actions, replacement, withdrawal, permissions and platform identity. |
-| [`fastframe-update`](crates/fastframe-update) | Self-update from GitHub releases: detects package-managed installs, verifies signed checksums, installs through a helper with rollback, keeps the handoff format older app versions use, moves renamed installations onto the new name with their launchers, and offers an opt-in pre-release channel. |
+| [`fastframe-update`](crates/fastframe-update) | Self-update from GitHub releases: detects package-managed installs, verifies signed checksums, installs through a helper with rollback, keeps the handoff format older app versions use, moves renamed installations onto the new name with their launchers, offers an opt-in pre-release channel, and replaces a user's AppImage in place when the app opts in. |
 
 ## Status
 
