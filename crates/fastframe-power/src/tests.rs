@@ -111,6 +111,7 @@ fn power_and_activities_can_move_between_threads() {
     fn send_and_sync<T: Send + Sync>() {}
     send_and_sync::<Power>();
     send_and_sync::<Activity>();
+    send_and_sync::<KeepAwake>();
     send_and_sync::<Ack>();
 }
 

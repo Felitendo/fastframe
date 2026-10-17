@@ -1,6 +1,6 @@
 [package]
 name = "fastframe-power"
-description = "The device's power, session and network state for an egui app: energy saver, battery, display, lock, reach and cost, sleep and wake, and App Nap"
+description = "The device's power, session and network state for an egui app: energy saver, battery, display, lock, reach and cost, sleep and wake, App Nap, and keeping the computer awake"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

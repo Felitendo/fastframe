@@ -9,6 +9,9 @@
 //!   gives the app a moment to save first; inside Flatpak it needs
 //!   `--system-talk-name=org.freedesktop.login1`, and without it the app
 //!   still hears about the wake.
+//! - Keeping the computer awake asks the portal's Inhibit for Suspend,
+//!   which GNOME and KDE honour for their automatic suspend and which works
+//!   inside Flatpak, or else takes an "idle" block lock from logind.
 //!
 //! <https://flatpak.github.io/xdg-desktop-portal/docs/doc-org.freedesktop.portal.PowerProfileMonitor.html>
 //! <https://systemd.io/INHIBITOR_LOCKS/>
@@ -146,6 +149,92 @@ fn who() -> String {
                 .map(|stem| stem.to_string_lossy().into_owned())
         })
         .unwrap_or_else(|| "fastframe".to_owned())
+}
+
+/// The portal's Inhibit flag for suspending the session.
+/// <https://flatpak.github.io/xdg-desktop-portal/docs/doc-org.freedesktop.portal.Inhibit.html>
+const PORTAL_SUSPEND: u32 = 4;
+
+/// Keeps the computer from sleeping on its own until dropped: a thread asks
+/// the desktop portal, or else logind, and holds what it got until the
+/// sender is dropped.
+pub(crate) struct KeepAwake {
+    _release: std::sync::mpsc::Sender<()>,
+}
+
+impl KeepAwake {
+    pub(crate) fn begin(reason: &str) -> Self {
+        let (release, released) = std::sync::mpsc::channel::<()>();
+        let reason = reason.to_owned();
+        let started = spawn("fastframe-keep-awake", move || {
+            hold_awake(&reason, &released);
+        });
+        if let Err(error) = started {
+            log::debug!("cannot keep the computer awake: {error}");
+        }
+        Self { _release: release }
+    }
+}
+
+/// Inhibits idle sleep, waits for the release, then lets it go.
+fn hold_awake(reason: &str, released: &std::sync::mpsc::Receiver<()>) {
+    match portal_inhibit(reason) {
+        Ok((connection, request)) => {
+            // Blocks until the `KeepAwake` is dropped.
+            let _ = released.recv();
+            let closed = Proxy::new(
+                &connection,
+                "org.freedesktop.portal.Desktop",
+                request.as_ref(),
+                "org.freedesktop.portal.Request",
+            )
+            .and_then(|proxy| proxy.call::<_, _, ()>("Close", &()));
+            if let Err(error) = closed {
+                // Closing the connection, as this thread now does, ends it too.
+                log::debug!("the portal's inhibit did not close: {error}");
+            }
+        }
+        Err(error) => {
+            log::debug!("no inhibit portal ({error}); asking logind");
+            match logind_inhibit(reason) {
+                Ok(lock) => {
+                    let _ = released.recv();
+                    drop(lock);
+                }
+                Err(error) => log::debug!("cannot keep the computer awake: {error}"),
+            }
+        }
+    }
+}
+
+/// The portal's Inhibit with the Suspend flag. The inhibition lasts until
+/// its request is closed or the connection ends.
+fn portal_inhibit(reason: &str) -> zbus::Result<(Connection, zbus::zvariant::OwnedObjectPath)> {
+    let connection = Connection::session()?;
+    let proxy = Proxy::new(
+        &connection,
+        "org.freedesktop.portal.Desktop",
+        "/org/freedesktop/portal/desktop",
+        "org.freedesktop.portal.Inhibit",
+    )?;
+    let mut options = std::collections::HashMap::new();
+    options.insert("reason", zbus::zvariant::Value::from(reason));
+    let request: zbus::zvariant::OwnedObjectPath =
+        proxy.call("Inhibit", &("", PORTAL_SUSPEND, options))?;
+    Ok((connection, request))
+}
+
+/// An "idle" block lock from logind, held as long as its descriptor is
+/// open.
+fn logind_inhibit(reason: &str) -> zbus::Result<zbus::zvariant::OwnedFd> {
+    let connection = Connection::system()?;
+    let manager = Proxy::new(
+        &connection,
+        "org.freedesktop.login1",
+        "/org/freedesktop/login1",
+        "org.freedesktop.login1.Manager",
+    )?;
+    manager.call("Inhibit", &("idle", who().as_str(), reason, "block"))
 }
 
 /// Takes a "delay" lock on sleep, or gets on without one.

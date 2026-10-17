@@ -6,7 +6,8 @@
 //! - SCNetworkReachability follows whether the internet can be reached, on
 //!   the main dispatch queue, which the app's event loop runs.
 //! - An activity from `beginActivityWithOptions:reason:` keeps work the
-//!   user is waiting for out of App Nap.
+//!   user is waiting for out of App Nap, and another with idle system sleep
+//!   disabled keeps the Mac awake.
 //!
 //! Sleep and wake from NSWorkspace are not followed yet.
 //! <https://developer.apple.com/documentation/foundation/processinfo/islowpowermodeenabled>
@@ -56,8 +57,7 @@ pub(crate) fn read_low_power(shared: &Shared) {
     shared.update(|conditions| conditions.saver = saver);
 }
 
-/// A user-initiated activity that still allows idle system sleep, ended
-/// when dropped.
+/// An `NSProcessInfo` activity, ended when dropped.
 pub(crate) struct Activity(Retained<ProtocolObject<dyn NSObjectProtocol>>);
 
 // SAFETY: the token is an opaque object that is only ever handed back to
@@ -73,6 +73,17 @@ impl Activity {
         Self(
             NSProcessInfo::processInfo().beginActivityWithOptions_reason(
                 NSActivityOptions::UserInitiatedAllowingIdleSystemSleep,
+                &NSString::from_str(reason),
+            ),
+        )
+    }
+
+    /// An activity that only keeps the Mac from sleeping when idle: the
+    /// display may still sleep, and App Nap is left to [`Activity::begin`].
+    pub(crate) fn keep_awake(reason: &str) -> Self {
+        Self(
+            NSProcessInfo::processInfo().beginActivityWithOptions_reason(
+                NSActivityOptions::IdleSystemSleepDisabled,
                 &NSString::from_str(reason),
             ),
         )

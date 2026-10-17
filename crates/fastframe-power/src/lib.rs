@@ -9,7 +9,8 @@
 //! before sleeping.
 //!
 //! [`Activity`] keeps work the user is waiting for (audio playing behind
-//! another app's window) out of App Nap on macOS.
+//! another app's window) out of App Nap on macOS, and [`KeepAwake`] keeps
+//! the computer from going to sleep on its own while it plays.
 //!
 //! ```no_run
 //! use fastframe_power::{Event, Power};
@@ -380,5 +381,81 @@ impl Activity {
 impl std::fmt::Debug for Activity {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("Activity")
+    }
+}
+
+/// Keeps the computer from going to sleep on its own while it is held, and
+/// lets it sleep again when dropped.
+///
+/// Hold one while the app does something the user expects to go on without
+/// touching the computer, above all audio playing on this computer, and drop
+/// it on pause, stop, an output error or when playback moves to another
+/// device. It blocks idle sleep only: the display still dims and turns off,
+/// the screen still locks, and the user can still put the computer to sleep
+/// or close the lid.
+///
+/// - macOS: an `NSProcessInfo` activity with idle system sleep disabled,
+///   which `pmset -g assertions` lists as a `PreventUserIdleSystemSleep`
+///   assertion under `reason`.
+/// - Windows: a power request for the system (`PowerSetRequest` with
+///   `PowerRequestSystemRequired`), which `powercfg /requests` lists with
+///   `reason`. Unlike `SetThreadExecutionState` it belongs to no thread, so
+///   it can be taken and dropped anywhere.
+/// - Linux: the desktop portal's Inhibit with the Suspend flag, which works
+///   inside Flatpak and which GNOME and KDE honour for their automatic
+///   suspend, or else an "idle" block lock from logind. A thread of its own
+///   asks and holds it, so a slow or absent bus never holds up the caller.
+///
+/// Keep it in an `Option<KeepAwake>` and begin one only when there is none,
+/// as with [`Activity`]. It does nothing on a platform that cannot do it.
+#[must_use = "the computer may sleep again once this is dropped"]
+pub struct KeepAwake {
+    #[cfg(target_os = "macos")]
+    _token: macos::Activity,
+    #[cfg(target_os = "windows")]
+    _request: Option<windows::KeepAwake>,
+    #[cfg(target_os = "linux")]
+    _inhibit: linux::KeepAwake,
+}
+
+impl KeepAwake {
+    /// Keeps the computer awake. `reason` is what the system shows for it,
+    /// such as "Playing audio".
+    pub fn begin(reason: &str) -> Self {
+        log::debug!("keeping the computer awake: {reason}");
+        #[cfg(target_os = "macos")]
+        {
+            Self {
+                _token: macos::Activity::keep_awake(reason),
+            }
+        }
+        #[cfg(target_os = "windows")]
+        {
+            Self {
+                _request: windows::KeepAwake::begin(reason),
+            }
+        }
+        #[cfg(target_os = "linux")]
+        {
+            Self {
+                _inhibit: linux::KeepAwake::begin(reason),
+            }
+        }
+        #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+        {
+            Self {}
+        }
+    }
+}
+
+impl Drop for KeepAwake {
+    fn drop(&mut self) {
+        log::debug!("the computer may sleep again");
+    }
+}
+
+impl std::fmt::Debug for KeepAwake {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("KeepAwake")
     }
 }

@@ -123,6 +123,38 @@ stop, an output error or a disconnection. It allows idle system sleep and
 the display to turn off: it does not keep the Mac awake. Elsewhere it does
 nothing.
 
+## Keeping the computer awake
+
+Hold a `KeepAwake` while the computer should not go to sleep on its own,
+such as while audio plays on it, and drop it on pause, stop, an output error
+or when playback moves to another device:
+
+```rust
+use fastframe_power::KeepAwake;
+
+let mut awake: Option<KeepAwake> = None;
+// In the logic pass, with `playing_here` from the player:
+if playing_here {
+    awake.get_or_insert_with(|| KeepAwake::begin("Playing audio"));
+} else {
+    awake = None;
+}
+```
+
+It blocks idle sleep only. The display still turns off, the screen still
+locks, and the user can still put the computer to sleep or close the lid.
+
+- macOS: an `NSProcessInfo` activity with idle system sleep disabled
+  (`PreventUserIdleSystemSleep` in `pmset -g assertions`).
+- Windows: a system power request (`PowerSetRequest`), which belongs to no
+  thread and shows in `powercfg /requests`.
+- Linux: the desktop portal's Inhibit with the Suspend flag, which works
+  inside Flatpak and which GNOME and KDE honour for their automatic suspend,
+  or else an "idle" block lock from logind
+  (`systemd-inhibit --list`). A thread of its own asks and holds it, so a
+  slow bus never holds up the caller. Desktops that implement neither keep
+  their own idle behaviour.
+
 ## Tests and demo runs
 
 `Power::fixed(conditions)` starts no reader, so the device's own state
