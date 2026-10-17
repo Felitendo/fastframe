@@ -1,4 +1,6 @@
-//! The macOS badge: the unread count on the Dock tile, as WhatsApp shows it.
+//! The macOS badge: the unread count on the Dock tile, as WhatsApp shows it,
+//! the unbundled Dock icon, and the activation policy that puts the app in
+//! the Dock or out of it.
 //!
 //! The Dock tile belongs to the running process, so the label is set through
 //! `NSApp.dockTile` on the main thread, where the interface runs, and an empty
@@ -25,6 +27,44 @@ pub(super) fn set_icon(encoded_image: &[u8]) -> Result<bool, crate::IconError> {
     // retains the decoded image after this call returns.
     unsafe { NSApplication::sharedApplication(main).setApplicationIconImage(Some(&image)) };
     Ok(true)
+}
+
+pub(super) fn set_dock_icon_visible(visible: bool) -> bool {
+    use crate::Policy;
+    use objc2_app_kit::NSApplicationActivationPolicy as Native;
+
+    let Some(main) = MainThreadMarker::new() else {
+        log::warn!("the Dock icon can only be shown or hidden on the main thread");
+        return false;
+    };
+    let app = NSApplication::sharedApplication(main);
+    let current = match app.activationPolicy() {
+        Native::Regular => Policy::Regular,
+        Native::Accessory => Policy::Accessory,
+        _ => Policy::Other,
+    };
+    let Some(switch) = crate::dock_switch(visible, current, app.isActive()) else {
+        return false;
+    };
+    let policy = match switch.policy {
+        Policy::Accessory => Native::Accessory,
+        Policy::Regular | Policy::Other => Native::Regular,
+    };
+    if !app.setActivationPolicy(policy) {
+        log::warn!(
+            "AppKit refused to {} the Dock icon",
+            if visible { "show" } else { "hide" }
+        );
+        return false;
+    }
+    if switch.reactivate {
+        // Leaving the Dock deactivates the app, which sends its window behind
+        // the others; returning to it leaves the menu bar with the previous
+        // app. Activating again keeps the window in front with the focus.
+        #[allow(deprecated, reason = "its replacement needs macOS 14")]
+        app.activateIgnoringOtherApps(true);
+    }
+    true
 }
 
 /// Counts unread chats on the Dock tile.

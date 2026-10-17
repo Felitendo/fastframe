@@ -1,4 +1,5 @@
-//! Application icons and badges that outlive individual windows.
+//! Application icons and badges that outlive individual windows, and whether
+//! the macOS Dock shows the app at all.
 //!
 //! Extracted from ZapFast's Dock and taskbar badge implementations. See the
 //! crate README for platform support and the Windows per-window overlay.
@@ -108,6 +109,75 @@ pub fn set_icon(encoded_image: &[u8]) -> Result<bool, IconError> {
     }
 }
 
+/// Shows or hides the application's macOS Dock icon, while the app runs.
+///
+/// Hidden, the app runs as a menu-bar app (AppKit's `Accessory` activation
+/// policy): no Dock icon, no entry in the Cmd-Tab switcher and no menu bar of
+/// its own, while its windows, their keyboard shortcuts (including the main
+/// menu's key equivalents) and its status item keep working. Shown, it is an
+/// ordinary app again (`Regular`). Keep a status item, such as
+/// `fastframe-tray`'s, while the icon is hidden: it is the way back to a
+/// closed window.
+///
+/// Call on the main thread. An app that was active is activated again after
+/// the switch, so its window stays in front with the focus. To start without
+/// a Dock icon, call this before the event loop starts (before
+/// `eframe::run_native`). winit sets `Regular` once AppKit finishes launching
+/// an unbundled run (`cargo run`), so call it again once the first window
+/// exists; a packaged `.app` keeps the early choice. `Info.plist`'s
+/// `LSUIElement` cannot change while the app runs, so this is the switch to
+/// use.
+///
+/// Returns whether the policy changed: `false` when it was already so, off
+/// the main thread (logged), when AppKit refused (logged), and on Windows
+/// and Linux, which have no Dock.
+pub fn set_dock_icon_visible(visible: bool) -> bool {
+    #[cfg(target_os = "macos")]
+    return macos::set_dock_icon_visible(visible);
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = visible;
+        false
+    }
+}
+
+/// AppKit's activation policies, as far as the Dock icon is concerned.
+#[cfg(any(target_os = "macos", test))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Policy {
+    /// An ordinary app, in the Dock.
+    Regular,
+    /// A menu-bar app, out of the Dock.
+    Accessory,
+    /// Anything else (`Prohibited`, as an unbundled run starts).
+    Other,
+}
+
+/// What showing or hiding the Dock icon has to do.
+#[cfg(any(target_os = "macos", test))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Switch {
+    /// The policy to set.
+    policy: Policy,
+    /// Whether to activate the app again afterwards, because it was active.
+    reactivate: bool,
+}
+
+/// The switch from `current` to the Dock icon `visible`, or `None` when the
+/// policy already matches.
+#[cfg(any(target_os = "macos", test))]
+fn dock_switch(visible: bool, current: Policy, active: bool) -> Option<Switch> {
+    let policy = if visible {
+        Policy::Regular
+    } else {
+        Policy::Accessory
+    };
+    (current != policy).then_some(Switch {
+        policy,
+        reactivate: active,
+    })
+}
+
 #[cfg(any(target_os = "macos", test))]
 fn is_app_bundle(path: &std::path::Path) -> bool {
     path.extension().is_some_and(|extension| extension == "app")
@@ -140,5 +210,59 @@ mod tests {
         )));
         assert!(!super::is_app_bundle(Path::new("/code/target/release")));
         assert!(!super::is_app_bundle(Path::new("/code/app")));
+    }
+
+    #[test]
+    fn hiding_the_dock_icon_makes_a_menu_bar_app_and_keeps_it_in_front() {
+        use super::{Policy, Switch, dock_switch};
+        assert_eq!(
+            dock_switch(false, Policy::Regular, true),
+            Some(Switch {
+                policy: Policy::Accessory,
+                reactivate: true
+            })
+        );
+        assert_eq!(
+            dock_switch(true, Policy::Accessory, true),
+            Some(Switch {
+                policy: Policy::Regular,
+                reactivate: true
+            })
+        );
+    }
+
+    #[test]
+    fn before_launch_the_policy_is_set_without_activating() {
+        use super::{Policy, Switch, dock_switch};
+        // An unbundled run starts `Prohibited`; nothing is active yet.
+        assert_eq!(
+            dock_switch(false, Policy::Other, false),
+            Some(Switch {
+                policy: Policy::Accessory,
+                reactivate: false
+            })
+        );
+        assert_eq!(
+            dock_switch(true, Policy::Other, false),
+            Some(Switch {
+                policy: Policy::Regular,
+                reactivate: false
+            })
+        );
+    }
+
+    #[test]
+    fn a_matching_policy_is_left_alone() {
+        use super::{Policy, dock_switch};
+        assert_eq!(dock_switch(true, Policy::Regular, true), None);
+        assert_eq!(dock_switch(false, Policy::Accessory, false), None);
+    }
+
+    #[test]
+    fn there_is_no_dock_to_change_off_macos() {
+        if !cfg!(target_os = "macos") {
+            assert!(!super::set_dock_icon_visible(false));
+            assert!(!super::set_dock_icon_visible(true));
+        }
     }
 }

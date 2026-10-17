@@ -1,6 +1,6 @@
 [package]
 name = "fastframe-dock"
-description = "Application Dock icons and desktop unread badges"
+description = "Application Dock icons, their visibility, and desktop unread badges"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -20,7 +20,7 @@ zbus.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2.workspace = true
-objc2-app-kit = { workspace = true, features = ["NSDockTile", "NSImage"] }
+objc2-app-kit = { workspace = true, features = ["NSDockTile", "NSImage", "NSRunningApplication"] }
 objc2-foundation = { workspace = true, features = ["NSBundle", "NSData"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
