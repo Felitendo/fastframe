@@ -32,7 +32,7 @@ section below has a subsection per app with the details.
 | App | Adopts | Not now |
 | --- | --- | --- |
 | ZapFast | [text](#fastframe-text), [fonts](#fastframe-fonts) (with the system's face), [emoji](#fastframe-emoji), [icons](#fastframe-icons), [theme](#fastframe-theme), [i18n](#fastframe-i18n), [log](#fastframe-log), [tray](#fastframe-tray), [shell](#fastframe-shell), [titlebar](#fastframe-titlebar), [update](#fastframe-update) | |
-| Spotifast | [text](#fastframe-text), [fonts](#fastframe-fonts), [icons](#fastframe-icons), [theme](#fastframe-theme), [i18n](#fastframe-i18n), [log](#fastframe-log), [tray](#fastframe-tray), [shell](#fastframe-shell), [titlebar](#fastframe-titlebar), [update](#fastframe-update) | [emoji](#fastframe-emoji) until it lays out colour emoji (it keeps Inter and its monochrome face for now) |
+| Spotifast | [autostart](#fastframe-autostart), [text](#fastframe-text), [fonts](#fastframe-fonts), [icons](#fastframe-icons), [theme](#fastframe-theme), [i18n](#fastframe-i18n), [log](#fastframe-log), [tray](#fastframe-tray), [shell](#fastframe-shell), [titlebar](#fastframe-titlebar), [update](#fastframe-update) | [emoji](#fastframe-emoji) until it lays out colour emoji (it keeps Inter and its monochrome face for now) |
 | Solco | [text](#fastframe-text), [fonts](#fastframe-fonts), [icons](#fastframe-icons), [titlebar](#fastframe-titlebar) (macOS only); [update](#fastframe-update) (with the pre-release channel); [log](#fastframe-log) (only the facade-free redaction and panic line, with `default-features = false`) later | [theme](#fastframe-theme) and [i18n](#fastframe-i18n) until it adds custom themes or translations; [shell](#fastframe-shell) (no tray or background mode); its `tracing` logger stays |
 | TonePush | [text](#fastframe-text), [fonts](#fastframe-fonts), [update](#fastframe-update) (with `portable_executable`) | [icons](#fastframe-icons) later (its own macros and layout); [log](#fastframe-log) (it uses `eprintln!`); [shell](#fastframe-shell); [theme](#fastframe-theme) and [i18n](#fastframe-i18n) until it adds custom themes or translations |
 | Chat with Work Local Agent | [text](#fastframe-text) | [fonts](#fastframe-fonts) (it draws with the platform's UI font); [tray](#fastframe-tray) and [shell](#fastframe-shell) (one winit loop with `pump_app_events`, tray-icon 0.25); [log](#fastframe-log) until it wants a log file; [theme](#fastframe-theme) and [i18n](#fastframe-i18n) until it adds custom themes or translations |
@@ -985,6 +985,53 @@ About 3,950 lines of updater code and tests leave the two apps, replaced by
 about 75 lines of configuration and 130 of changed call sites. The crate is
 about 6,000 lines as formatted: about 2,900 of code and documentation and
 3,100 of tests and test fakes.
+
+## fastframe-autostart
+
+Starting at login, with the window or hidden in the tray. The platform's own
+record is the state: Settings reads `Autostart::state()` back on a worker
+instead of keeping a copy.
+
+```rust
+let autostart = fastframe_autostart::Autostart::new("zapfast", "ZapFast");
+// On a worker; both block.
+let state = autostart.state();
+let state = autostart.set(Some(fastframe_autostart::Start::Hidden))?;
+```
+
+### Spotifast
+
+New, no code to delete (crmne/spotifast#122): a Settings row with Off, the
+window, or the tray. `packaging/macos/bundle.sh` writes
+`macos_agent_plist("rocks.spotifast.Spotifast", "--start-hidden")` to
+`Contents/Library/LaunchAgents/rocks.spotifast.Spotifast.autostart.plist`
+before signing.
+
+### ZapFast
+
+| Delete | Lines | Instead |
+| --- | --- | --- |
+| `src/autostart.rs` | 275 | `Autostart::new("zapfast", "ZapFast")`; `set(Some(Start::Hidden))` or `set(None)` |
+
+Behaviour changes: the Linux entry is written atomically and an entry the
+desktop turned off reads as off; the Windows value is read back with Task
+Manager's switch. On macOS the login item moves from a LaunchAgent in
+`~/Library/LaunchAgents/me.paolino.zapfast.plist` to `SMAppService` with the
+bundled agent: delete that file once (when it exists, register through the
+crate and remove it), and add the agent to the bundle. A Flatpak, which
+`supported()` excluded, can now register through the portal.
+
+### Chat with Work
+
+| Delete | Lines | Instead |
+| --- | --- | --- |
+| `app/src/autostart.rs`: `entry_path`, `is_enabled`, `set_enabled`, `entry`, `desktop_exec_arg` and their tests | 160 | `Autostart::new("cww-app", "ChatWithWorkLocalAgent").hidden_argument("--background")` |
+
+The Windows Run value keeps its name (`ChatWithWorkLocalAgent`), so existing
+registrations read back; the desktop entry's `Name` becomes that too, unless
+the app keeps its own Linux text. `windows_registry` stays for its other
+reads. The macOS LaunchAgent `com.chatwithwork.cww-app.plist` moves to the
+bundled agent as for ZapFast.
 
 ## Not moved yet: widgets
 

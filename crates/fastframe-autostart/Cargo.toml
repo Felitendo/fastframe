@@ -1,0 +1,57 @@
+[package]
+name = "fastframe-autostart"
+description = "Start an app when the person logs in, with its window or hidden in the tray: XDG autostart or the background portal, a macOS login item, the Windows Run key"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+keywords = ["autostart", "login", "startup", "tray", "desktop"]
+categories = ["gui", "os"]
+
+[dependencies]
+# Why a registration could not be read or made.
+log.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# The autostart entry is replaced atomically, never left half written.
+fastframe-file = { path = "../fastframe-file" }
+# Inside a Flatpak, the background portal registers the app instead: the
+# sandbox cannot write the host's autostart folder. zbus's own small
+# executor, as in fastframe-desktop, so no tokio is needed.
+zbus = { version = "5.19", default-features = false, features = ["blocking-api", "async-io"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2.workspace = true
+objc2-foundation = { workspace = true, features = ["NSBundle", "NSError", "NSString"] }
+# SMAppService (macOS 13 and later): the main app as a login item, and the
+# bundled agent that starts it hidden. The objc2 version every app already
+# has; only the one class.
+objc2-service-management = { version = "0.3.2", default-features = false, features = ["std", "objc2", "objc2-foundation", "SMAppService"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_System_Registry"] }
+
+[dev-dependencies]
+# Autostart folders in throwaway directories, never the real one.
+tempfile.workspace = true
+
+# The workspace's lints with `unsafe_code` lowered to `deny`, allowed only in
+# the modules that talk to the OS (`macos.rs`, `windows.rs`), each block with
+# a SAFETY note.
+[lints.rust]
+unsafe_code = "deny"
+missing_docs = "warn"
+unreachable_pub = "warn"
+rust_2018_idioms = { level = "warn", priority = -1 }
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+dbg_macro = "warn"
+todo = "warn"
+unwrap_used = "warn"
+print_stdout = "warn"
+print_stderr = "warn"
