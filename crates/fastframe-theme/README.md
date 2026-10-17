@@ -1,7 +1,8 @@
 # fastframe-theme
 
 Colour palettes for egui apps: JSON palette files, a catalogue loaded off
-the interface thread, the palettes the apps share, and following the
+the interface thread, the palettes the apps share, a light and a dark
+palette that follow the system's appearance, and following the
 [Omarchy](https://omarchy.org) desktop's theme live.
 
 The app keeps its own palette type (its colours and its dark and light
@@ -120,6 +121,61 @@ removed when nobody changed it.
 
 `display_name` shows a file under its name without `.json` ("Nord",
 "Rose Pine Dawn"), and the Omarchy palette as "Omarchy".
+
+## Light and dark pairs
+
+`Pair` holds a palette for light mode and one for dark mode, so "follow
+system" can switch between, say, Catppuccin Latte and Catppuccin, rather
+than only between the app's own light and dark palettes. An empty slot is
+the app's own palette for that base, so `Pair::default()` is the usual
+follow system and settings without a pair keep their look.
+
+The palette type says which base it was built on:
+
+```rust
+impl fastframe_theme::PaletteBase for Palette {
+    fn palette_base(&self) -> fastframe_theme::Base {
+        fastframe_theme::Base::from_dark(self.dark)
+    }
+}
+```
+
+Then, with the pair in the app's settings:
+
+```rust
+// Settings: serializes as { "light": { "filename", "palette" }, "dark": .. },
+// leaving out empty slots; a damaged slot reads as empty.
+#[serde(default)]
+theme_pair: fastframe_theme::Pair<Palette>,
+
+// Read the chosen files first, with any single selection:
+catalog.start(dir, settings.custom_theme.clone().into_iter().chain(settings.theme_pair.filenames()), &waker);
+
+// When a scan finishes, take edited colours (and save when it says so):
+if catalog.poll() && settings.theme_pair.refresh(&catalog) { save(); }
+
+// Each frame, while following the system:
+let wanted = settings.theme_pair.palette(fastframe_theme::Base::from_dark(dark));
+
+// Each slot's picker, with the app's own palette first:
+for theme in catalog.pair_themes(fastframe_theme::Base::Light) { /* .. */ }
+settings.theme_pair.set(fastframe_theme::Base::Light, Some(theme));
+```
+
+- A slot takes only palettes of its own base (`pair_themes(base)`, and
+  `set` refuses the others): light mode shows a light palette and dark
+  mode a dark one, so the widgets' light or dark style, which egui takes
+  from the system, always matches the colours. The live Omarchy palette is
+  never offered; it follows the desktop on its own.
+- Each slot keeps the colours last read from its file, so the first frame
+  after a restart is right without a scan, and a file that disappears, or
+  is edited to name the other base, keeps its last look. `status(base,
+  &catalog)` then says `SelectedUnavailable`, as `Catalog::status` does
+  for a single palette. Without those colours (a damaged cache) the slot
+  shows the app's own palette for its base.
+- Show the switch with `Transition` as any change of colours: when the
+  system's appearance changes, `palette(base)` changes, and the app's usual
+  `begin` / `holding` / apply sequence reveals it.
 
 ## Omarchy
 

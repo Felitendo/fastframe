@@ -45,8 +45,10 @@
 //! [`Catalog`] lists the palette files in a directory on a background thread,
 //! installs the [`presets`] there as files and, on Linux, adds the current
 //! Omarchy palette
-//! ([`omarchy`]), and watches both for changes. [`Transition`] reveals a
-//! change of colours from the middle of the window outwards.
+//! ([`omarchy`]), and watches both for changes. [`Pair`] holds a palette for
+//! light mode and one for dark mode, shown as the system's appearance
+//! changes. [`Transition`] reveals a change of colours from the middle of
+//! the window outwards.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -54,6 +56,7 @@ use egui::Color32;
 
 mod catalog;
 pub mod omarchy;
+mod pair;
 pub mod presets;
 mod transition;
 #[cfg(target_os = "linux")]
@@ -63,6 +66,7 @@ pub use catalog::{
     Catalog, DesktopThemes, MAX_DIRECTORY_ENTRIES, MAX_FILE_BYTES, MAX_THEMES, Problem, Status,
     Waker,
 };
+pub use pair::{Pair, Slot};
 pub use transition::{Reveal, Transition};
 
 /// The colour names every app's palette understands: the sixteen interface
@@ -97,6 +101,15 @@ pub enum Base {
     Light,
 }
 
+impl Base {
+    /// The base matching a dark (`true`) or light system appearance, such
+    /// as `Base::from_dark(ctx.theme() == egui::Theme::Dark)`.
+    #[must_use]
+    pub fn from_dark(dark: bool) -> Self {
+        if dark { Self::Dark } else { Self::Light }
+    }
+}
+
 /// An app's palette, as palette files set it.
 pub trait Palette: Clone + PartialEq + Send + 'static {
     /// The app's own dark or light palette.
@@ -114,6 +127,13 @@ pub trait Palette: Clone + PartialEq + Send + 'static {
     fn derive(&mut self, given: &BTreeSet<&str>) {
         let _ = given;
     }
+}
+
+/// A palette that says which base it was built on, so a [`Pair`] can offer
+/// light palettes for light mode and dark ones for dark mode.
+pub trait PaletteBase: Palette {
+    /// The base this palette started from: the `base` its file named.
+    fn palette_base(&self) -> Base;
 }
 
 /// A palette file's contents, before they meet a palette type.
@@ -261,6 +281,12 @@ pub(crate) mod test_palette {
                 let window = self.colors["window"];
                 self.colors.insert("chat".into(), window);
             }
+        }
+    }
+
+    impl super::PaletteBase for Colors {
+        fn palette_base(&self) -> Base {
+            Base::from_dark(self.dark)
         }
     }
 }

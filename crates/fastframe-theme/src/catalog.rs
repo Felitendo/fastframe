@@ -125,7 +125,7 @@ impl<P> Default for Loaded<P> {
 
 struct Scan {
     directory: PathBuf,
-    selected: Option<String>,
+    selected: Vec<String>,
     waker: Waker,
 }
 
@@ -231,11 +231,20 @@ impl<P: Palette> Catalog<P> {
         false
     }
 
-    /// Lists `directory` in the background. `selected` (a filename) is read
-    /// first, so a large directory cannot push the saved choice out. When a
-    /// scan is running, this waits for it and replaces any earlier waiting
-    /// request.
-    pub fn start(&mut self, directory: PathBuf, selected: Option<String>, waker: &Waker) {
+    /// Lists `directory` in the background. `selected` (the saved filenames:
+    /// an `Option<String>`, or a [`crate::Pair`]'s
+    /// [`filenames`](crate::Pair::filenames) chained to it) is read first, so a
+    /// large directory cannot push the saved choice out. When a scan is
+    /// running, this waits for it and replaces any earlier waiting request.
+    pub fn start(
+        &mut self,
+        directory: PathBuf,
+        selected: impl IntoIterator<Item = String>,
+        waker: &Waker,
+    ) {
+        let mut selected: Vec<String> = selected.into_iter().collect();
+        selected.sort();
+        selected.dedup();
         let scan = Scan {
             directory,
             selected,
@@ -273,12 +282,7 @@ impl<P: Palette> Catalog<P> {
             } else {
                 std::collections::BTreeSet::new()
             };
-            let loaded = with_presets(
-                &scan.directory,
-                scan.selected.as_deref(),
-                presets,
-                &installed,
-            );
+            let loaded = with_presets(&scan.directory, &scan.selected, presets, &installed);
             #[cfg(target_os = "linux")]
             let loaded = {
                 let mut loaded = loaded;
@@ -438,16 +442,20 @@ impl<P: Palette> Catalog<P> {
 /// it was deleted, and it is not added back.
 fn with_presets<P: Palette>(
     directory: &Path,
-    selected: Option<&str>,
+    selected: &[String],
     presets: bool,
     installed: &std::collections::BTreeSet<String>,
 ) -> Loaded<P> {
     // A preset selected without a local override is added below; reading it
     // from the directory would only log that it is missing.
-    let selected_file = selected.filter(|filename| {
-        !presets || !presets::contains(filename) || directory.join(filename).exists()
-    });
-    let mut loaded = discover(directory, selected_file);
+    let selected_files: Vec<&str> = selected
+        .iter()
+        .map(String::as_str)
+        .filter(|filename| {
+            !presets || !presets::contains(filename) || directory.join(filename).exists()
+        })
+        .collect();
+    let mut loaded = discover(directory, &selected_files);
     if presets {
         for theme in presets::themes::<P>() {
             if installed.contains(&theme.filename) {
@@ -457,7 +465,7 @@ fn with_presets<P: Palette>(
                 .themes
                 .iter()
                 .any(|local| local.filename == theme.filename);
-            if selected_file == Some(theme.filename.as_str())
+            if selected_files.contains(&theme.filename.as_str())
                 && directory.join(&theme.filename).exists()
                 && !listed
             {
@@ -515,11 +523,11 @@ fn read_theme<P: Palette>(directory: &Path, filename: &str) -> Result<CustomThem
 }
 
 /// Lists the palette files in `directory`, never recursing.
-fn discover<P: Palette>(directory: &Path, selected: Option<&str>) -> Loaded<P> {
+fn discover<P: Palette>(directory: &Path, selected: &[&str]) -> Loaded<P> {
     let mut loaded = Loaded::default();
-    // Read the saved choice directly so a large directory cannot displace
-    // it. It is still a single validated filename, never a path.
-    if let Some(filename) = selected {
+    // Read the saved choices directly so a large directory cannot displace
+    // them. Each is still a single validated filename, never a path.
+    for &filename in selected {
         match read_theme(directory, filename) {
             Ok(theme) => loaded.themes.push(theme),
             Err(error) => log::warn!("unable to load selected theme {filename:?}: {error}"),
@@ -553,7 +561,7 @@ fn discover<P: Palette>(directory: &Path, selected: Option<&str>) -> Loaded<P> {
         let Some(filename) = filename.to_str() else {
             continue;
         };
-        if filename_is_local(filename) && Some(filename) != selected {
+        if filename_is_local(filename) && !selected.contains(&filename) {
             match entry.file_type() {
                 Ok(kind) if kind.is_file() => names.push(filename.to_owned()),
                 // A link counts when it leads to a regular file.
@@ -674,7 +682,7 @@ mod tests {
         std::fs::write(directory.path().join("Nord.json"), "broken").unwrap();
         let loaded: Loaded<Colors> = with_presets(
             directory.path(),
-            Some("Nord.json"),
+            &["Nord.json".to_owned()],
             true,
             &Default::default(),
         );
@@ -686,7 +694,7 @@ mod tests {
         );
         let loaded: Loaded<Colors> = with_presets(
             directory.path(),
-            Some("Tokyo Night.json"),
+            &["Tokyo Night.json".to_owned()],
             true,
             &Default::default(),
         );
@@ -697,7 +705,7 @@ mod tests {
                 .any(|theme| theme.filename == "Nord.json")
         );
         let loaded: Loaded<Colors> =
-            with_presets(directory.path(), None, false, &Default::default());
+            with_presets(directory.path(), &[], false, &Default::default());
         assert!(loaded.themes.is_empty(), "presets only when asked for");
     }
 
@@ -798,9 +806,9 @@ mod tests {
     fn discovery_sorts_valid_files_and_skips_invalid_ones() {
         let directory = tempfile::tempdir().unwrap();
         let dir = directory.path().join("themes");
-        assert!(discover::<Colors>(&dir, None).themes.is_empty());
+        assert!(discover::<Colors>(&dir, &[]).themes.is_empty());
         assert_eq!(
-            discover::<Colors>(&dir, None).problem,
+            discover::<Colors>(&dir, &[]).problem,
             None,
             "a missing folder is fine"
         );
@@ -813,7 +821,7 @@ mod tests {
         ] {
             std::fs::write(dir.join(name), text).unwrap();
         }
-        let names: Vec<_> = discover::<Colors>(&dir, None)
+        let names: Vec<_> = discover::<Colors>(&dir, &[])
             .themes
             .into_iter()
             .map(|theme| theme.filename)
@@ -877,14 +885,14 @@ mod tests {
         for filename in ["folder.json", "dangling.json", "large.json"] {
             assert!(read_theme::<Colors>(&dir, filename).is_err(), "{filename}");
         }
-        let listed: Vec<String> = discover::<Colors>(&dir, None)
+        let listed: Vec<String> = discover::<Colors>(&dir, &[])
             .themes
             .into_iter()
             .map(|theme| theme.filename)
             .collect();
         assert_eq!(listed, ["pywal.json"]);
         assert!(
-            discover::<Colors>(&dir, Some("pywal.json"))
+            discover::<Colors>(&dir, &["pywal.json"])
                 .themes
                 .iter()
                 .any(|theme| theme.filename == "pywal.json")
@@ -899,7 +907,7 @@ mod tests {
             std::fs::write(dir.join(format!("{index:03}.json")), b"{}").unwrap();
         }
         std::fs::write(dir.join("selected.json"), b"{}").unwrap();
-        let loaded = discover::<Colors>(dir, Some("selected.json"));
+        let loaded = discover::<Colors>(dir, &["selected.json"]);
         assert_eq!(loaded.themes.len(), MAX_THEMES);
         assert!(
             loaded
@@ -911,7 +919,7 @@ mod tests {
         for index in 0..MAX_DIRECTORY_ENTRIES {
             std::fs::write(dir.join(format!("ignored-{index}.txt")), b"ignored").unwrap();
         }
-        let loaded = discover::<Colors>(dir, Some("selected.json"));
+        let loaded = discover::<Colors>(dir, &["selected.json"]);
         let names: Vec<_> = loaded
             .themes
             .iter()
@@ -927,7 +935,7 @@ mod tests {
         let file = directory.path().join("not-a-folder");
         std::fs::write(&file, b"").unwrap();
         assert_eq!(
-            discover::<Colors>(&file, None).problem,
+            discover::<Colors>(&file, &[]).problem,
             Some(Problem::Unreadable)
         );
     }
