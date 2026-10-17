@@ -27,6 +27,10 @@
 //! )?;
 //! let clock = output.clock(); // for any thread
 //!
+//! // On the thread that decodes and queues what the renderer plays, so a
+//! // busy machine does not keep it waiting until the queue runs dry.
+//! fastframe_audio::raise_feeder_priority();
+//!
 //! // Pausing stops the device asking for sound: no callbacks, no CPU.
 //! output.pause();
 //! output.resume();
@@ -48,6 +52,7 @@
 //! ```
 
 mod clock;
+mod feeder;
 #[cfg(target_os = "windows")]
 mod mmcss;
 mod plan;
@@ -59,6 +64,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 pub use clock::Clock;
+pub use feeder::raise_feeder_priority;
 
 use stream::{DefaultWatch, Live, Shared};
 

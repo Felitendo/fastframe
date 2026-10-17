@@ -31,9 +31,15 @@ log.workspace = true
 # Registers the stream's thread with the Multimedia Class Scheduler Service.
 windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_System_Threading"] }
 
-# The workspace forbids unsafe code. Joining MMCSS is one Win32 call, so this
-# crate carries the workspace's lints with `unsafe_code` lowered to `deny`,
-# allowed only in `mmcss.rs`, with a SAFETY note.
+# Raises the feeding thread's QoS class (macOS) or nice value (Linux). Already
+# in every app's tree, through cpal among others.
+[target.'cfg(any(target_os = "macos", target_os = "linux"))'.dependencies]
+libc = "0.2"
+
+# The workspace forbids unsafe code. Joining MMCSS and raising a thread's
+# priority are one OS call each, so this crate carries the workspace's lints
+# with `unsafe_code` lowered to `deny`, allowed only in `mmcss.rs` and
+# `feeder.rs`, with a SAFETY note on each call.
 [lints.rust]
 unsafe_code = "deny"
 missing_docs = "warn"

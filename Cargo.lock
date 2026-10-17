@@ -1251,6 +1251,7 @@ name = "fastframe-audio"
 version = "0.6.0"
 dependencies = [
  "cpal",
+ "libc",
  "log",
  "windows-sys 0.60.2",
 ]

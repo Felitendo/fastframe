@@ -57,6 +57,28 @@ through the output, so nothing the app does can make the callback wait. It
 stays the same across pauses and reopens, so what is playing carries on from
 the same sample.
 
+## The feeding thread
+
+The callback runs where the audio system wants it: CoreAudio's real-time
+I/O thread on macOS, the WASAPI thread in MMCSS on Windows (the output
+joins it as an "Audio" task), PipeWire's or PulseAudio's own thread on Linux.
+The thread that decodes and queues what the renderer plays does not, so a
+busy or swapping machine can keep it waiting longer than the queue lasts,
+and the callback plays silence: crackles and gaps that the device never
+reports (crmne/spotifast#785). Call `fastframe_audio::raise_feeder_priority()`
+once on that thread (librespot's player thread, a kira decoder, a decoding
+worker of the app's own):
+
+- macOS: the user-interactive QoS class, ahead of default, utility and
+  background work;
+- Windows: one step above normal priority;
+- Linux: nice -5, which an unprivileged process is usually refused.
+
+It is the policy Solco gives its audition decoder. It is best effort: it
+returns whether the system granted it, logs a refusal once at debug level,
+and the thread plays on as it was. Only that thread changes, so never call
+it from a thread pool shared with other work.
+
 ## Options
 
 `OutputOptions` (all have defaults):
