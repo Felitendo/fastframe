@@ -552,7 +552,6 @@ mod tests {
         assert!(is_zombie("42 (app) Z 1 2"));
     }
 
-    #[cfg(target_os = "linux")]
     #[test]
     fn an_extracted_appimage_is_told_from_a_mounted_one() {
         use std::ffi::OsStr;
@@ -564,6 +563,7 @@ mod tests {
         assert!(!runs_extracted(None));
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn this_process_has_an_identity() {
         let current =

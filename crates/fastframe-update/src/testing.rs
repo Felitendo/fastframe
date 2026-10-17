@@ -207,6 +207,7 @@ impl FakeHost {
         self
     }
 
+    #[cfg(unix)]
     pub(crate) fn with_user_id(mut self, user: u32) -> Self {
         self.user_id = Some(user);
         self

@@ -747,6 +747,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     const APPIMAGES: UpdateConfig = UpdateConfig {
         appimage: true,
         ..SPOTIFAST
