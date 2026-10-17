@@ -99,7 +99,11 @@ it from a thread pool shared with other work.
   the device's buffer, so a renderer's own clock moves in small steps.
 - `follow_default`: move to a new default output (on macOS and Windows,
   checked every two seconds; PipeWire and PulseAudio move the stream
-  themselves). On by default.
+  themselves). On by default. On Windows the default output opens as the
+  endpoint it is at that moment, not as WASAPI's virtual default device:
+  that one stops activating for the rest of the process once its change
+  notifications have run (RustAudio/cpal#1402), which left Spotifast silent
+  after a Bluetooth headset connected (crmne/spotifast#689).
 - `release_after`: let the device go after a pause this long (five minutes by
   default); the next `resume()` opens it again, and `maintain()` then reports
   `Reopened`. `maintain()` is what lets it go, so an app whose audio thread

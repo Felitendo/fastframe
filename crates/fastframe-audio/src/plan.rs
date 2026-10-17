@@ -120,6 +120,32 @@ pub(crate) fn choose(names: &[String], wanted: Option<&str>) -> Choice {
     }
 }
 
+/// The device to open for the default output: the endpoint that is the
+/// default right now, found among the listed devices by its id, or the
+/// default device itself when it is not among them.
+///
+/// On Windows, cpal's default device is a virtual one that WASAPI activates
+/// through `ActivateAudioInterfaceAsync`. Once cpal's device change callbacks
+/// have run on Windows' thread pool, that activation fails with
+/// `RPC_E_CHANGED_MODE` for the rest of the process (RustAudio/cpal#1402,
+/// crmne/spotifast#689), so a stream that a new Bluetooth headset broke never
+/// opens again. The endpoint itself keeps opening, and the output follows the
+/// default on its own, so it opens the endpoint.
+#[cfg_attr(not(any(windows, test)), allow(dead_code))]
+pub(crate) fn concrete_default<D, I: PartialEq>(
+    default: D,
+    listed: impl IntoIterator<Item = D>,
+    id: impl Fn(&D) -> Option<I>,
+) -> D {
+    let Some(wanted) = id(&default) else {
+        return default;
+    };
+    listed
+        .into_iter()
+        .find(|device| id(device).as_ref() == Some(&wanted))
+        .unwrap_or(default)
+}
+
 /// Whether an output paused since `paused_at` has rested long enough to let
 /// the device go.
 pub(crate) fn should_release(
@@ -226,6 +252,28 @@ pub(crate) fn blocks(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_default_opens_as_the_endpoint_it_is_now() {
+        // (name, id): the virtual default is endpoint 2 just now.
+        let id = |device: &(&str, Option<u8>)| device.1;
+        let listed = [("a", Some(1)), ("b", Some(2)), ("c", None)];
+        assert_eq!(concrete_default(("default", Some(2)), listed, id).0, "b");
+    }
+
+    #[test]
+    fn the_default_stays_when_its_endpoint_is_not_listed() {
+        let id = |device: &(&str, Option<u8>)| device.1;
+        assert_eq!(
+            concrete_default(("default", Some(2)), [("a", Some(1))], id).0,
+            "default"
+        );
+        assert_eq!(
+            concrete_default(("default", None), [("a", None)], id).0,
+            "default",
+            "a default without an id is not matched to a device without one"
+        );
+    }
 
     #[test]
     fn a_device_that_cannot_be_named_is_left_out_and_the_rest_keep_their_names() {

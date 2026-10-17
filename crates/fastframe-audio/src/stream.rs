@@ -180,6 +180,14 @@ fn pick(host: &cpal::Host, wanted: &Device) -> Result<(cpal::Device, Option<Stri
         }
     }
     let device = host.default_output_device().ok_or(OpenError::NoDevice)?;
+    #[cfg(windows)]
+    let device = match host.output_devices() {
+        Ok(listed) => plan::concrete_default(device, listed, |device| device.id().ok()),
+        Err(error) => {
+            log::debug!("audio output: cannot list the outputs to open the default's: {error}");
+            device
+        }
+    };
     let name = device_name(&device).map_err(OpenError::from)?;
     Ok((device, Some(name)))
 }
