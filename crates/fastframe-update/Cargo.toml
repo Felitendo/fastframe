@@ -19,6 +19,9 @@ default = []
 reqwest = ["dep:reqwest"]
 
 [dependencies]
+# The download page's marker files, read exactly as the portable data folder
+# reads them.
+fastframe-dirs = { path = "../fastframe-dirs" }
 # Error type of every fallible call; the apps already report with `{:#}`.
 anyhow = "1"
 # handoff.json, the release listing and the release metadata.

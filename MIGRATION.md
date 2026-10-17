@@ -1106,3 +1106,24 @@ account/chat scoping, rate limits, private-content rules and audio previews.
 Spotifast and TonePush currently have no system notification adapter to migrate.
 For an app such as Chat with Work, use its daemon as the native delivery owner
 for the GUI and TUI. Its server owns preferences, presence and browser deduplication.
+
+## Portable data folders
+
+`fastframe-dirs` keeps a portable Windows copy's config, state and cache in
+`<slug>-data` next to the executable, and an installed copy's in the
+per-user folders. An app moving onto it replaces its own
+`directories::ProjectDirs` lookup with `App::discover`, which gives the same
+per-user paths (config, state or local data, cache) when the copy is not
+portable, so nothing moves for installed copies or on Linux and macOS.
+
+- Call `App::discover` after claiming the single-instance slot and before the
+  window opens, and log its `mode` once logging has started.
+- Give a portable copy a slot of its own: scope the slot with
+  `App::portable().instance_scope()`, keeping it in the user's profile.
+- Name in `not_copied` the state entries a running installed copy holds
+  locked (its instance lock, on Windows) and the logs.
+- Anything the app ties to its folder's path (a credential profile derived
+  from it, say) is fixed in the `adapt` closure, on the copy, before it is
+  put in place.
+
+Spotifast is the first app on it.

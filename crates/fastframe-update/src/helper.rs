@@ -944,6 +944,69 @@ mod tests {
         }
     }
 
+    /// A portable copy keeps its settings in `<slug>-data` beside it (see
+    /// `fastframe-dirs`). Installing, rolling back, moving off a legacy name
+    /// and sweeping the staging folders all leave that folder as it was.
+    #[test]
+    fn a_portable_update_keeps_the_data_folder_beside_it() {
+        const SPOTIFAST: UpdateConfig = UpdateConfig {
+            legacy_names: &["fastpotify"],
+            ..UpdateConfig::new("crmne/spotifast", "Spotifast", "spotifast", "0.10.3")
+        };
+        let extension = std::env::consts::EXE_SUFFIX;
+        for (name, acknowledges) in [
+            ("spotifast", true),
+            ("spotifast", false),
+            ("fastpotify", true),
+            ("fastpotify", false),
+        ] {
+            let root = tempfile::tempdir().unwrap();
+            let root = root.path().canonicalize().unwrap();
+            let data = root.join("spotifast-data");
+            fs::create_dir_all(data.join("state")).unwrap();
+            fs::write(data.join("state").join("session.json"), b"signed in").unwrap();
+            fs::write(
+                root.join("spotifast-portable.txt"),
+                b"spotifast-portable-v1",
+            )
+            .unwrap();
+            let executable = root.join(format!("{name}{extension}"));
+            fs::write(&executable, b"old executable").unwrap();
+            let installation = Installation {
+                executable: executable.clone(),
+                kind: Kind::Portable,
+            };
+            let directory = stage::staging(&SPOTIFAST, &installation).unwrap();
+            let payload = directory.join(format!("spotifast{extension}"));
+            fs::write(&payload, b"new executable").unwrap();
+            let staged = Staged {
+                sha256: stage::hash(&payload).unwrap(),
+                installation,
+                directory,
+                payload,
+                version: "0.10.4".into(),
+            };
+            let job = write_job(&staged);
+            let host = FakeHost::default().on_spawn(if acknowledges {
+                Behaviour::Acknowledge
+            } else {
+                Behaviour::Exit(false)
+            });
+            assert_eq!(run(&SPOTIFAST, &host, &job).is_ok(), acknowledges);
+            stage::sweep(&SPOTIFAST, &root, None);
+            assert!(!staged.directory.exists(), "{name} {acknowledges}");
+            assert_eq!(
+                fs::read(data.join("state").join("session.json")).unwrap(),
+                b"signed in",
+                "{name} {acknowledges}"
+            );
+            assert_eq!(
+                fs::read(root.join("spotifast-portable.txt")).unwrap(),
+                b"spotifast-portable-v1"
+            );
+        }
+    }
+
     #[test]
     fn the_helper_refuses_a_job_from_a_used_or_foreign_folder() {
         for marker in [READY, STARTED, RESULT, PREVIOUS] {

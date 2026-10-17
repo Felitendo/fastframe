@@ -1,0 +1,24 @@
+[package]
+name = "fastframe-dirs"
+description = "An app's config, state and cache folders: the platform's per-user folders, or a folder next to a portable copy on Windows"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+keywords = ["portable", "directories", "config", "desktop", "windows"]
+categories = ["filesystem", "os"]
+
+[dependencies]
+# The platform's per-user folders, as the apps already compute them.
+directories.workspace = true
+
+[dev-dependencies]
+# Installed and portable folders in throwaway directories.
+tempfile.workspace = true
+
+[lints]
+workspace = true

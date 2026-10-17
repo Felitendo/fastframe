@@ -360,9 +360,10 @@ fn runs_the_portable_app(config: &UpdateConfig, platform: Platform, executable: 
 /// Whether `<name>-<kind>.txt` in `directory` reads `<name>-<kind>-v1`, for
 /// the slug or a legacy name.
 fn marker(config: &UpdateConfig, directory: &Path, kind: &str) -> bool {
+    // The same check that decides whether a portable copy keeps its data
+    // next to it.
     config.names().any(|name| {
-        fs::read_to_string(directory.join(format!("{name}-{kind}.txt")))
-            .is_ok_and(|value| value.trim() == format!("{name}-{kind}-v1"))
+        fastframe_dirs::marker(directory, name, kind, |path| fs::read_to_string(path).ok())
     })
 }
 

@@ -104,7 +104,11 @@ would report fastframe's version, so the app passes its own.
    with `--update-receipt`, working in the app's folder. The new app
    acknowledges by writing `started`.
    A failure at any step, or no `started` within a minute, restores
-   `previous` and restarts the old app with `--update-error`.
+   `previous` and restarts the old app with `--update-error`. A portable
+   update touches only the executable and its staging folder, so the
+   `<slug>-data` folder a portable copy keeps beside it on Windows
+   (`fastframe-dirs`) stays as it was, whether the update sticks, rolls
+   back or moves the copy off a legacy name.
 6. Staging folders do not pile up. When the new app acknowledges, and
    before each download, the staging folders of earlier updates go: those
    whose helper wrote `result.txt`, and those no helper ever took. A folder

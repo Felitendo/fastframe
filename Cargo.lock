@@ -1280,6 +1280,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "fastframe-dirs"
+version = "0.7.0"
+dependencies = [
+ "directories",
+ "tempfile",
+]
+
+[[package]]
 name = "fastframe-dock"
 version = "0.7.0"
 dependencies = [
@@ -1497,6 +1505,7 @@ name = "fastframe-update"
 version = "0.7.0"
 dependencies = [
  "anyhow",
+ "fastframe-dirs",
  "reqwest",
  "ring",
  "serde",
