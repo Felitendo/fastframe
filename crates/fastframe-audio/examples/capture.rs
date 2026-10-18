@@ -5,11 +5,12 @@
 //!
 //! It captures for a second, pauses for a second to show that a paused input
 //! gets no callbacks, and captures for another second. `--device <id>` opens
-//! an input by an id from the `devices` example instead of the default.
+//! an input by an id from the `devices` example instead of the default, and
+//! `--name <name>` by its name.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use fastframe_audio::{Capture, Device, DeviceId, Input, InputOptions};
 
@@ -47,12 +48,20 @@ fn main() -> Result<(), fastframe_audio::OpenError> {
         .iter()
         .position(|arg| arg == "--device")
         .and_then(|at| args.get(at + 1))
-        .map_or(Device::Default, |id| Device::Id(DeviceId::new(id.as_str())));
+        .map(|id| Device::Id(DeviceId::new(id.as_str())))
+        .or_else(|| {
+            args.iter()
+                .position(|arg| arg == "--name")
+                .and_then(|at| args.get(at + 1))
+                .map(|name| Device::Named(name.clone()))
+        })
+        .unwrap_or(Device::Default);
 
     let stats = Arc::new(Stats::default());
     let meter = Meter {
         stats: Arc::clone(&stats),
     };
+    let opening = Instant::now();
     let mut input = Input::open(
         InputOptions {
             device,
@@ -60,7 +69,9 @@ fn main() -> Result<(), fastframe_audio::OpenError> {
         },
         meter,
     )?;
+    let opened = opening.elapsed();
     let clock = input.clock();
+    println!("opened in {opened:?}");
     println!(
         "{} ({}) at {} Hz, {} channels, through {}",
         input.device_name(),

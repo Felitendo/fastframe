@@ -590,7 +590,10 @@ impl<R: Render> Output<R> {
     /// For the default device, the device it is just now. On PipeWire the
     /// stream follows the default itself and its node is not named, so this
     /// is the default's node as PipeWire's PulseAudio server names it, or
-    /// cpal's own `output_default` without one.
+    /// cpal's own `output_default` without one. Finding it connects to that
+    /// server (about 10 ms, longer if it does not answer), so it is done on
+    /// the first call after each open, not by the open itself; call it
+    /// where waiting is fine.
     #[must_use]
     pub fn device_id(&self) -> &DeviceId {
         self.session.device_id()

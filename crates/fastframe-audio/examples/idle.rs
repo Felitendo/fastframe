@@ -84,12 +84,19 @@ fn main() -> Result<(), fastframe_audio::OpenError> {
         stats: Arc::clone(&stats),
         channels: 1,
     };
+    let opening = Instant::now();
     let mut output = Output::open(options, renderer)?;
+    let opened = opening.elapsed();
     let clock = output.clock();
+    let asking = Instant::now();
+    let id = output.device_id().clone();
     println!(
-        "{} ({}) at {} Hz, {} channels, through {}",
+        "opened in {opened:?}; device_id() took {:?}",
+        asking.elapsed()
+    );
+    println!(
+        "{} ({id}) at {} Hz, {} channels, through {}",
         output.device_name(),
-        output.device_id(),
         output.sample_rate(),
         output.channels(),
         fastframe_audio::host()

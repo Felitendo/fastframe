@@ -124,7 +124,10 @@ impl Shared {
 pub(crate) struct Live {
     pub(crate) stream: cpal::Stream,
     pub(crate) device: String,
-    pub(crate) id: DeviceId,
+    /// The device's own id, as cpal gives it without the host.
+    pub(crate) own_id: String,
+    /// The host it is on, as cpal names it in ids (`pipewire`).
+    pub(crate) host: String,
     pub(crate) sample_rate: u32,
     pub(crate) channels: u16,
     /// The default device's id when this stream opened on it, for noticing
@@ -231,7 +234,7 @@ pub(crate) fn open<E: Engine>(
     let host = host();
     let (device, default_at_open) = pick(&host, &options.device, direction)?;
     let name = device_name(&device).map_err(OpenError::from)?;
-    let id = reported_id(&host, &device, direction);
+    let own_id = own_id(&device);
     let default = match direction {
         Direction::Output => device.default_output_config(),
         Direction::Input => device.default_input_config(),
@@ -317,7 +320,8 @@ pub(crate) fn open<E: Engine>(
                 return Ok(Live {
                     stream,
                     device: name,
-                    id,
+                    own_id,
+                    host: host.id().to_string(),
                     sample_rate: attempt.sample_rate,
                     channels,
                     default_at_open,
@@ -437,11 +441,13 @@ fn listed(device: &cpal::Device) -> plan::Listed {
 /// The id of the device behind cpal's PipeWire default devices, which name
 /// none: PipeWire's PulseAudio server's default sink or source. `None`
 /// without that server, or on other hosts, which open a device of their own.
-fn server_default(host: &cpal::Host, direction: Direction) -> Option<String> {
+///
+/// It connects to that server, which takes about 10 ms, and up to cpal's
+/// two seconds when the server does not answer, so it is only asked when an
+/// app wants the id.
+fn server_default(host: &str, direction: Direction) -> Option<String> {
     #[cfg(target_os = "linux")]
-    if host.id() == cpal::HostId::PipeWire
-        && cpal::available_hosts().contains(&cpal::HostId::PulseAudio)
-    {
+    if host == "pipewire" && cpal::available_hosts().contains(&cpal::HostId::PulseAudio) {
         let pulse = cpal::host_from_id(cpal::HostId::PulseAudio).ok()?;
         return default_device(&pulse, direction).map(|device| own_id(&device));
     }
@@ -449,16 +455,16 @@ fn server_default(host: &cpal::Host, direction: Direction) -> Option<String> {
     None
 }
 
-/// The id to report for an opened device: its own, or for a PipeWire
-/// default device the device it stands for just now, when that can be found.
-fn reported_id(host: &cpal::Host, device: &cpal::Device, direction: Direction) -> DeviceId {
-    let id = own_id(device);
-    if plan::is_pipewire_default(&host.id().to_string(), &id)
+/// The id to report for a device whose own id is `own` on `host`: that, or
+/// for a PipeWire default device the device it stands for just now, when
+/// that can be found.
+pub(crate) fn reported_id(host: &str, own: &str, direction: Direction) -> DeviceId {
+    if plan::is_pipewire_default(host, own)
         && let Some(server) = server_default(host, direction)
     {
         return DeviceId::new(server);
     }
-    DeviceId::new(id)
+    DeviceId::new(own)
 }
 
 /// The devices a picker can offer in `direction` (see [`plan::listable`]).
@@ -472,7 +478,7 @@ pub(crate) fn devices(direction: Direction) -> Result<Vec<DeviceInfo>, OpenError
     let default = default_device(&host, direction).map(|device| {
         let id = own_id(&device);
         if plan::is_pipewire_default(&host.id().to_string(), &id) {
-            server_default(&host, direction)
+            server_default(&host.id().to_string(), direction)
         } else {
             Some(id)
         }

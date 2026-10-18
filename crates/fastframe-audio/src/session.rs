@@ -4,7 +4,7 @@
 
 use std::fmt;
 use std::sync::atomic::Ordering;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
 
 use crate::plan::{self, Direction};
@@ -27,7 +27,13 @@ pub(crate) struct Session<E: Engine> {
     idle: plan::Idle,
     watch: Option<DefaultWatch>,
     device: String,
-    id: DeviceId,
+    /// The device's own id and host, from which [`Self::device_id`] finds
+    /// the id to report the first time it is asked.
+    own_id: String,
+    host: String,
+    /// The id to report, found once per stream: on PipeWire's default it
+    /// takes a connection to its PulseAudio server, which no open waits for.
+    id: OnceLock<DeviceId>,
     sample_rate: u32,
     channels: u16,
 }
@@ -40,7 +46,7 @@ impl<E: Engine> fmt::Debug for Session<E> {
         };
         f.debug_struct(name)
             .field("device", &self.device)
-            .field("id", &self.id)
+            .field("own_id", &self.own_id)
             .field("sample_rate", &self.sample_rate)
             .field("channels", &self.channels)
             .field("paused", &self.paused)
@@ -61,7 +67,9 @@ impl<E: Engine> Session<E> {
         .then(|| DefaultWatch::start(live.default_at_open.clone(), E::DIRECTION));
         Ok(Self {
             device: live.device.clone(),
-            id: live.id.clone(),
+            own_id: live.own_id.clone(),
+            host: live.host.clone(),
+            id: OnceLock::new(),
             sample_rate: live.sample_rate,
             channels: live.channels,
             settings,
@@ -213,7 +221,8 @@ impl<E: Engine> Session<E> {
     }
 
     pub(crate) fn device_id(&self) -> &DeviceId {
-        &self.id
+        self.id
+            .get_or_init(|| stream::reported_id(&self.host, &self.own_id, E::DIRECTION))
     }
 
     pub(crate) fn sample_rate(&self) -> u32 {
@@ -248,7 +257,9 @@ impl<E: Engine> Session<E> {
             Ok(live) => {
                 self.stall = plan::Stall::new(self.clock.played(), Instant::now());
                 self.device = live.device.clone();
-                self.id = live.id.clone();
+                self.own_id = live.own_id.clone();
+                self.host = live.host.clone();
+                self.id = OnceLock::new();
                 self.sample_rate = live.sample_rate;
                 self.channels = live.channels;
                 self.live = Some(live);
