@@ -50,6 +50,11 @@ pub(crate) struct Live {
     pub(crate) default_at_open: Option<String>,
 }
 
+/// The buffer asked of PulseAudio when the app wants the driver's own: about
+/// a PipeWire quantum.
+const PULSEAUDIO_DRIVER_BUFFER: crate::BufferSize =
+    crate::BufferSize::Duration(std::time::Duration::from_millis(20));
+
 /// Opens the stream the options ask for and starts it, unless `paused`.
 pub(crate) fn open<R: Render>(
     options: &OutputOptions,
@@ -72,6 +77,10 @@ pub(crate) fn open<R: Render>(
         crate::Buffer::Fixed(size) => Some(size),
         crate::Buffer::FixedOnWindows(size) => cfg!(windows).then_some(size),
     };
+    // PulseAudio's own target is about two seconds, which no app means by
+    // the driver's buffer; ask it for what PipeWire would give instead.
+    let buffer = buffer
+        .or_else(|| (host.id().to_string() == "pulseaudio").then_some(PULSEAUDIO_DRIVER_BUFFER));
     let channels = if options.channels == 0 {
         default.channels()
     } else {

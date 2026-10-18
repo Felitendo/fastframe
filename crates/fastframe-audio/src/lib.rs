@@ -114,7 +114,8 @@ pub enum BufferSize {
 /// The device's buffer.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Buffer {
-    /// The driver's own size.
+    /// The driver's own size. On PulseAudio, whose own target is about two
+    /// seconds, 20 ms instead.
     #[default]
     Driver,
     /// A fixed size on every platform, asked for as given and clamped to
@@ -122,7 +123,7 @@ pub enum Buffer {
     /// otherwise targets about two seconds.
     Fixed(BufferSize),
     /// A fixed size on Windows, where shared-mode output underruns with the
-    /// driver's; the driver's own elsewhere.
+    /// driver's; the driver's own elsewhere, as for [`Buffer::Driver`].
     FixedOnWindows(BufferSize),
 }
 
