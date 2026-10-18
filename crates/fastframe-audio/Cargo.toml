@@ -13,11 +13,9 @@ keywords = ["audio", "cpal", "output", "egui", "desktop"]
 categories = ["multimedia::audio"]
 
 [features]
-# cpal's native PulseAudio backend (pure Rust), which Solco uses so its fixed
-# buffer replaces PulseAudio's ~2 s default target.
+# Kept so apps that named them still build. On Linux both hosts are always
+# compiled in (below); elsewhere cpal has no such hosts.
 pulseaudio = ["cpal/pulseaudio"]
-# cpal's PipeWire backend. Builds bindings against libpipewire, so it needs
-# its headers and clang; off by default.
 pipewire = ["cpal/pipewire"]
 
 [dependencies]
@@ -41,6 +39,15 @@ libc = "0.2"
 # cpal's own `realtime-dbus` would link the C libdbus. Its own small executor,
 # as in fastframe-desktop; apps that enable zbus's tokio feature keep it.
 [target.'cfg(target_os = "linux")'.dependencies]
+# Every app's output goes to the sound server itself, never through ALSA's
+# `pipewire`, `pulse` or `default` plugins: cpal's default host is then
+# PipeWire, then PulseAudio (pure Rust, whose fixed buffer replaces
+# PulseAudio's ~2 s default target), then ALSA. Only the server hosts and
+# ALSA `hw` devices get a real-time callback (`plan::realtime_eligible`), so
+# without these an ordinary desktop would never get one. The PipeWire host
+# builds bindings against libpipewire, so Linux builds need its headers and
+# clang (`libpipewire-0.3-dev clang libclang-dev` on Debian and Ubuntu).
+cpal = { version = "0.18.1", features = ["pipewire", "pulseaudio"] }
 zbus = { version = "5.19", default-features = false, features = ["blocking-api", "async-io"] }
 
 # The workspace forbids unsafe code. Joining MMCSS and raising a thread's

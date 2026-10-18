@@ -169,15 +169,20 @@ carries on across reopens (another device, another rate) without jumping.
 Take differences between readings to follow a clip. `Clock::latency()` is the
 latency itself, for lining up a picture with the sound.
 
-## Features
+## Linux sound servers
 
-- `pulseaudio`: cpal's PulseAudio backend (pure Rust).
-- `pipewire`: cpal's PipeWire backend, which needs libpipewire's headers and
-  clang to build.
+On Linux the output goes to the sound server itself, never through ALSA's
+`pipewire`, `pulse` or `default` plugins: cpal's PipeWire host, then its
+PulseAudio host (pure Rust), then ALSA, whichever is running. Both server
+hosts are always built in, so an app needs no feature for them, and only
+they and ALSA's `hw` devices get the real-time callback.
 
-On Linux, cpal uses PipeWire, then PulseAudio, then ALSA, whichever is
-enabled and running; ALSA's headers (`libasound2-dev`, `alsa-lib`) are needed
-in every case.
+Building on Linux needs ALSA's headers (`libasound2-dev`, `alsa-lib`), and
+for the PipeWire host libpipewire's headers and clang (`libpipewire-0.3-dev
+clang libclang-dev` on Debian and Ubuntu, `pipewire clang` on Arch).
+
+The `pulseaudio` and `pipewire` features still exist, so apps that named
+them keep building, but they no longer change anything.
 
 ## Example
 
