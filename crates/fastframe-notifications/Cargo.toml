@@ -17,9 +17,9 @@ log.workspace = true
 # Already used by the consumers: one background runtime handles delivery and
 # clicks without blocking the UI or starting a thread for every notification.
 tokio = { version = "1", features = ["rt", "sync", "time", "macros"] }
-# Already in the workspace through fastframe-emoji, and in the apps through
-# egui's image loaders: decodes the app's logo and writes Windows' opaque
-# tile of it, so the icon keeps its colours (see src/logo.rs).
+# Already in the workspace through fastframe-emoji, and in the apps' trees:
+# decodes the app's logo and writes Windows' opaque tile of it, so the icon
+# keeps its colours (see src/logo.rs).
 png = "0.18"
 
 # The per-user cache folder the logo file is written to, as fastframe-dirs
@@ -31,7 +31,7 @@ directories.workspace = true
 # The apps already use zbus. One shared connection owns IDs and subscriptions;
 # futures-lite merges the action and close streams without another runtime.
 futures-lite = "2"
-fastframe-desktop = { path = "../fastframe-desktop", version = "0.8.1" }
+fastframe-desktop = { path = "../fastframe-desktop", version = "0.9.0" }
 zbus.workspace = true
 
 # macOS bindings already used by ZapFast and Solco, with cancellation-safe
