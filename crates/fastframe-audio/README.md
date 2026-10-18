@@ -161,9 +161,11 @@ source's one to one without mixing, so a stereo stream on a mono
 microphone had its right channel silent.
 
 cpal's PipeWire default input says two channels whatever the source, so
-opening the default asks PipeWire's PulseAudio server how many its default
-source has (about 6 ms), and `device_id()` then needs no second asking.
-When the default
+opening the default input on PipeWire asks PipeWire's PulseAudio server how
+many its default source has, on the thread that opens it, never on the
+audio thread. It takes about 6 ms, and `device_id()` then needs no second
+asking, but a server that does not answer holds the open for up to two
+seconds: one more reason to open inputs off the UI thread. When the default
 source changes, PipeWire moves the stream there at the channels it opened
 with, so the next `maintain()` reopens it at the new source's own and
 returns `Reopened` with `DefaultChanged`; that reopen asks the server

@@ -317,6 +317,8 @@ pub(crate) fn open<E: Engine>(
     .map_err(OpenError::from)?;
     // An input opens at the source's own channels; on PipeWire's default
     // that takes asking its PulseAudio server, which also names the source.
+    // It is asked here, on the thread that opens (`Input::open`, or
+    // `maintain()` and `resume()` reopening), never in a callback.
     let mut reported_id = None;
     let own_channels = match direction {
         Direction::Output => default.channels(),

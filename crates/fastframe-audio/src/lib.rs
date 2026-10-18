@@ -650,7 +650,12 @@ impl<C: Capture> Input<C> {
     /// Opens the device and starts capturing into `capturer`.
     ///
     /// Asking the device can take a perceptible time, so call it off the UI
-    /// thread. A failure is not remembered: the next `open` tries again.
+    /// thread. On PipeWire, opening the default input also asks PipeWire's
+    /// PulseAudio server how many channels the default source has (cpal's
+    /// PipeWire default input does not say): about 6 ms, and up to two
+    /// seconds when that server does not answer. It is asked on the thread
+    /// that opens, never on the audio thread. A failure is not remembered:
+    /// the next `open` tries again.
     pub fn open(options: InputOptions, capturer: C) -> Result<Self, OpenError> {
         Ok(Self {
             session: Session::open(options.settings(), Capturing(capturer))?,
@@ -688,8 +693,8 @@ impl<C: Capture> Input<C> {
     /// On PipeWire's default input it also reopens the input when the
     /// default source changes, so it captures at the new source's own
     /// channels ([`Maintained::Reopened`] with [`Reason::DefaultChanged`]).
-    /// That reopen asks PipeWire's PulseAudio server for the new source's
-    /// channels, as [`open`](Self::open) does.
+    /// That reopen asks PipeWire's PulseAudio server again, as
+    /// [`open`](Self::open) does, so it can wait as long.
     pub fn maintain(&mut self) -> Maintained {
         self.session.maintain()
     }
