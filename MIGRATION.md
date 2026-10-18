@@ -1132,8 +1132,10 @@ Spotifast is the first app on it.
 
 Output with the app's renderer, and since 0.12 input into the app's
 capturer, device ids, an idle pause and an optional rodio mixer. Upgrading
-to 0.12 needs no change: `Maintained`, `Device::Named` and
-`output_device_names()` are as they were.
+to 0.12 needs no change in Solco or Spotifast: `Maintained`, `Device::Named`
+and `output_device_names()` are as they were. Code that matches `Device`
+without a wildcard adds an arm for `Device::Id`, and an `OutputOptions`
+literal without `..OutputOptions::default()` adds `pause_when_idle: None`.
 
 ### Solco
 
@@ -1151,7 +1153,11 @@ before. Later, as separate changes:
   save `DeviceInfo::id`, open with `Device::Id`. A name saved by an earlier
   version still opens through `Device::Named`, so read an old setting as a
   name and write it back as the id of the device it opened
-  (`Output::device_id()`, which after a `Reopened` is the new device's).
+  (`Output::device_id()`, which after a `Reopened` is the new device's),
+  but only when that name matched: check it against `output_devices()`
+  first. When it did not, the default played instead, and saving the
+  default's id would pin the user to whatever the default was then; keep
+  the name until the device is back.
 - `src/sink.rs`'s `MixerRender` (about 40 lines) applies its volume ramp in
   `render`, which the crate's `MixerRender` (the `rodio` feature) does not.
   Move the ramp into a rodio source in front of the mixer first, or keep the

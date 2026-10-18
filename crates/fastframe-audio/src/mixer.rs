@@ -11,7 +11,9 @@ use crate::Render;
 /// the format the mixer already has keeps it, so a reopen on another device
 /// carries on from the same sample; another rate or channel count gets a new
 /// mixer, which the app takes from the [`MixerSlot`] and adds its sources to
-/// from then on. Until the first mixer is made it plays silence.
+/// from then on. Until the first mixer is made it plays silence. A sound
+/// added to the old mixer just before such a reopen is not played; take the
+/// new mixer after each `Reopened`.
 ///
 /// It is [idle](Render::idle) while the mixer has nothing to play, so with
 /// [`OutputOptions::pause_when_idle`](crate::OutputOptions::pause_when_idle)
