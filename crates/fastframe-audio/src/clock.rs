@@ -29,6 +29,8 @@ struct Shared {
     latency: AtomicU64,
     /// The largest value handed out, so a reading never goes backwards.
     last: AtomicU64,
+    /// Gaps the device played because a callback came too late.
+    underruns: AtomicU64,
 }
 
 impl Clock {
@@ -52,6 +54,20 @@ impl Clock {
     #[must_use]
     pub fn latency(&self) -> Duration {
         Duration::from_nanos(self.0.latency.load(Ordering::Acquire))
+    }
+
+    /// How many times the device played silence because the callback came
+    /// too late (an underrun), by the device's own timeline of when each
+    /// block plays, across pauses and reopens. A pause is not one. Backends
+    /// that give no playback times count none.
+    #[must_use]
+    pub fn underruns(&self) -> u64 {
+        self.0.underruns.load(Ordering::Relaxed)
+    }
+
+    /// The device played a gap before the latest block.
+    pub(crate) fn underran(&self) {
+        self.0.underruns.fetch_add(1, Ordering::Relaxed);
     }
 
     /// The callback rendered `frames` more frames, and the device said they

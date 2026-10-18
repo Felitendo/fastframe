@@ -59,9 +59,17 @@ the same sample.
 
 ## The feeding thread
 
-The callback runs where the audio system wants it: CoreAudio's real-time
-I/O thread on macOS, the WASAPI thread in MMCSS on Windows (the output
-joins it as an "Audio" task), PipeWire's or PulseAudio's own thread on Linux.
+The callback runs ahead of ordinary work: on CoreAudio's real-time I/O
+thread on macOS, on the WASAPI thread in MMCSS on Windows (the output joins
+it as an "Audio" task), and on Linux on cpal's own thread, which the output
+asks RTKit to make real-time on its first callback (or, refused, to raise
+its nice level), as PipeWire does for its own threads. Without RTKit (a
+minimal system, a Flatpak sandbox) the thread keeps ordinary priority and
+the outcome is logged once.
+
+`Clock::underruns()` counts the times the device played silence because the
+callback came too late, by the device's own timeline of when each block
+plays.
 The thread that decodes and queues what the renderer plays does not, so a
 busy or swapping machine can keep it waiting longer than the queue lasts,
 and the callback plays silence: crackles and gaps that the device never

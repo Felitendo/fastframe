@@ -188,6 +188,43 @@ pub(crate) fn needs_reopen(kind: cpal::ErrorKind) -> bool {
     )
 }
 
+/// Follows the device's own timeline of when each callback's audio plays,
+/// to notice when it played something else in between: the callback came
+/// too late and the device played silence (an underrun).
+///
+/// Each block should play where the one before it ends. A block scheduled
+/// more than half a block after that left a gap. The playback times come
+/// from the device (PipeWire's graph clock, CoreAudio's host time, WASAPI's
+/// padding), so a late callback that still made its deadline leaves none,
+/// and neither does a callback that renders slowly. A pause, a resume or a
+/// new stream starts the timeline again.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct Timeline {
+    /// When the previous block's audio ends, in the stream's nanoseconds.
+    next: Option<u128>,
+    /// The output's pause and resume count when `next` was set.
+    epoch: u64,
+}
+
+impl Timeline {
+    /// Notes a block of `frames` at `rate` that plays at `playback`
+    /// nanoseconds; true when the device played a gap before it.
+    pub(crate) fn observe(&mut self, epoch: u64, playback: u128, frames: u64, rate: u32) -> bool {
+        if rate == 0 || frames == 0 || playback == 0 {
+            self.next = None;
+            return false;
+        }
+        let length = u128::from(frames) * 1_000_000_000 / u128::from(rate);
+        let gap = match self.next {
+            Some(next) if epoch == self.epoch => playback > next + length / 2,
+            _ => false,
+        };
+        self.epoch = epoch;
+        self.next = Some(playback + length);
+        gap
+    }
+}
+
 /// How long a playing output may stand still before it counts as stuck: a
 /// few times the longest device buffer.
 pub(crate) const STALL: Duration = Duration::from_secs(2);
@@ -252,6 +289,35 @@ pub(crate) fn blocks(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_timeline_counts_blocks_the_device_played_late() {
+        let block = 512_u64;
+        let rate = 48_000;
+        let length = u128::from(block) * 1_000_000_000 / u128::from(rate);
+        let mut timeline = Timeline::default();
+        let mut at = 1_000_000_u128;
+        let mut gaps = 0;
+        // Contiguous blocks, timestamps a little off either way: no gaps.
+        for jitter in [0_i64, 3_000, -2_000, 1_000, 0] {
+            let playback =
+                u128::try_from(i128::try_from(at).unwrap() + i128::from(jitter)).unwrap();
+            gaps += u32::from(timeline.observe(0, playback, block, rate));
+            at += length;
+        }
+        assert_eq!(gaps, 0);
+        // The device played one block of silence before this one.
+        at += length;
+        assert!(timeline.observe(0, at, block, rate));
+        at += length;
+        assert!(!timeline.observe(0, at, block, rate));
+        // After a pause and a resume the jump is not a gap.
+        at += 5_000_000_000;
+        assert!(!timeline.observe(1, at, block, rate));
+        // A backend without timestamps never counts.
+        assert!(!timeline.observe(1, 0, block, rate));
+        assert!(!timeline.observe(1, 0, block, rate));
+    }
 
     #[test]
     fn the_default_opens_as_the_endpoint_it_is_now() {

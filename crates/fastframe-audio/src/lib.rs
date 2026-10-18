@@ -56,6 +56,8 @@ mod feeder;
 #[cfg(target_os = "windows")]
 mod mmcss;
 mod plan;
+#[cfg(target_os = "linux")]
+mod realtime;
 mod stream;
 
 use std::fmt;
@@ -355,6 +357,7 @@ impl<R: Render> Output<R> {
         }
         self.paused = true;
         self.paused_at = Some(Instant::now());
+        self.shared.epoch.fetch_add(1, Ordering::Relaxed);
         if let Some(live) = &self.live {
             use cpal::traits::StreamTrait;
             if let Err(error) = live.stream.pause() {
@@ -373,6 +376,7 @@ impl<R: Render> Output<R> {
         }
         self.paused = false;
         self.paused_at = None;
+        self.shared.epoch.fetch_add(1, Ordering::Relaxed);
         match &self.live {
             Some(live) => {
                 use cpal::traits::StreamTrait;

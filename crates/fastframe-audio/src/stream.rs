@@ -17,6 +17,9 @@ pub(crate) struct Shared {
     pub(crate) failed: AtomicBool,
     /// Errors not yet taken by the app.
     pub(crate) errors: Mutex<Vec<OutputError>>,
+    /// Counts pauses and resumes, so the callback knows the device's
+    /// timeline started again (see [`plan::Timeline`]).
+    pub(crate) epoch: std::sync::atomic::AtomicU64,
 }
 
 impl Shared {
@@ -249,13 +252,19 @@ where
     R: Render,
 {
     let channels = usize::from(config.channels);
+    let rate = config.sample_rate;
     let mut scratch: Vec<f32> = Vec::new();
     let errors = Arc::clone(&shared);
+    let mut timeline = plan::Timeline::default();
+    #[cfg(target_os = "linux")]
+    let mut promoter = crate::realtime::Promoter::start();
     device.build_output_stream::<T, _, _>(
         *config,
         move |data: &mut [T], info: &cpal::OutputCallbackInfo| {
             #[cfg(target_os = "windows")]
             crate::mmcss::join_once();
+            #[cfg(target_os = "linux")]
+            promoter.on_callback();
             scratch.clear();
             scratch.resize(data.len(), 0.0);
             // The app's thread only takes the lock while (re)opening, before
@@ -288,7 +297,16 @@ where
             let latency = timestamp
                 .playback
                 .saturating_duration_since(timestamp.callback);
-            clock.rendered((data.len() / channels.max(1)) as u64, latency);
+            let frames = (data.len() / channels.max(1)) as u64;
+            if timeline.observe(
+                shared.epoch.load(Ordering::Relaxed),
+                timestamp.playback.as_nanos(),
+                frames,
+                rate,
+            ) {
+                clock.underran();
+            }
+            clock.rendered(frames, latency);
         },
         move |error| errors.report(error),
         None,

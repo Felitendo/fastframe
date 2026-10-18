@@ -1,10 +1,11 @@
 //! Precedence for the thread that feeds an output: the one that decodes and
 //! queues what the renderer plays.
 //!
-//! The output's callback already runs where the audio system wants it:
-//! CoreAudio's real-time I/O thread on macOS, the WASAPI thread in MMCSS on
-//! Windows (see `mmcss.rs`), PipeWire's or PulseAudio's own thread on Linux.
-//! The thread that fills the renderer's queue does not. It runs as any thread
+//! The output's callback runs ahead of ordinary work: on CoreAudio's
+//! real-time I/O thread on macOS, on the WASAPI thread in MMCSS on Windows
+//! (see `mmcss.rs`), and on Linux on cpal's own thread, which the output asks
+//! RTKit to make real-time (see `realtime.rs`; cpal itself leaves it at
+//! ordinary priority). The thread that fills the renderer's queue does not. It runs as any thread
 //! does, so a busy or swapping machine can keep it waiting longer than the
 //! queue lasts, and the callback then plays silence: crackles and gaps that
 //! the device never reports (crmne/spotifast#785, #88). Solco raises its

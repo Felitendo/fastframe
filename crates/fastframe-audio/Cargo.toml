@@ -36,10 +36,17 @@ windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_System_
 [target.'cfg(any(target_os = "macos", target_os = "linux"))'.dependencies]
 libc = "0.2"
 
+# Asks RTKit to make the callback's thread real-time (`realtime.rs`). Pure
+# Rust, already in the apps' trees through fastframe-desktop and -text, where
+# cpal's own `realtime-dbus` would link the C libdbus. Its own small executor,
+# as in fastframe-desktop; apps that enable zbus's tokio feature keep it.
+[target.'cfg(target_os = "linux")'.dependencies]
+zbus = { version = "5.19", default-features = false, features = ["blocking-api", "async-io"] }
+
 # The workspace forbids unsafe code. Joining MMCSS and raising a thread's
 # priority are one OS call each, so this crate carries the workspace's lints
-# with `unsafe_code` lowered to `deny`, allowed only in `mmcss.rs` and
-# `feeder.rs`, with a SAFETY note on each call.
+# with `unsafe_code` lowered to `deny`, allowed only in `mmcss.rs`,
+# `feeder.rs` and `realtime.rs`, with a SAFETY note on each call.
 [lints.rust]
 unsafe_code = "deny"
 missing_docs = "warn"
