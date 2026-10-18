@@ -327,6 +327,11 @@ Building on Linux needs ALSA's headers (`libasound2-dev`, `alsa-lib`), and
 for the PipeWire host libpipewire's headers and clang (`libpipewire-0.3-dev
 clang libclang-dev` on Debian and Ubuntu, `pipewire clang` on Arch).
 
+The PipeWire host needs PipeWire 0.3.53 or later, both to build and where
+the app runs, since the app links `libpipewire-0.3.so.0` when it loads. So
+Ubuntu 22.04, with 0.3.48, cannot build fastframe-audio; Ubuntu 24.04 and
+Debian 12 are the oldest releases that can.
+
 The `pulseaudio` and `pipewire` features still exist, so apps that named
 them keep building, but they no longer change anything.
 
