@@ -171,6 +171,11 @@ impl fmt::Display for DeviceId {
 
 /// Which device to open. Only this one is ever opened; other devices are at
 /// most listed.
+///
+/// An [`Input`] is opened by id or name only among the devices
+/// [`input_devices`] offers, so a name a source shares with a sink (both
+/// "Built-in Audio Analog Stereo" on PipeWire) opens the source, and a sink's
+/// id never records what the sink plays: the default input opens instead.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum Device {
     /// The system's default device.

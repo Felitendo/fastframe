@@ -365,7 +365,7 @@ fn pick(
     if *wanted != Device::Default {
         let devices: Vec<cpal::Device> = host.devices().map_err(OpenError::from)?.collect();
         let listed: Vec<plan::Listed> = devices.iter().map(listed).collect();
-        match plan::choose(&listed, wanted, direction) {
+        match plan::choose(&host.id().to_string(), &listed, wanted, direction) {
             Choice::Listed(index) => {
                 if let Some(device) = devices.into_iter().nth(index) {
                     return Ok((device, None));

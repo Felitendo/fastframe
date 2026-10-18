@@ -78,7 +78,9 @@ device, without the system's name:
 A saved id that matches nothing (the device is unplugged, or the settings
 came from another machine) opens the default device, with a warning in the
 log. A device is matched by its id for `Device::Id` and by its name for
-`Device::Named`, never one for the other. `device_id()` gives the id of
+`Device::Named`, never one for the other. An input is matched only among what
+`input_devices()` offers, so a source that shares its name with a sink
+opens the source, and a sink's or a monitor's id opens the default input. `device_id()` gives the id of
 the device a stream opened on; after `maintain()` returns `Reopened`, it
 gives the new device's.
 

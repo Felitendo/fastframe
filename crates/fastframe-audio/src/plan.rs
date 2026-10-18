@@ -222,12 +222,25 @@ pub(crate) enum Choice {
     },
 }
 
-/// Finds the device the app asked for among `listed`, in `direction`: by its
-/// id for [`Device::Id`](crate::Device::Id), by its name for
+/// Finds the device the app asked for among `listed`, in `direction`, on
+/// the cpal host named `host`: by its id for
+/// [`Device::Id`](crate::Device::Id), by its name for
 /// [`Device::Named`](crate::Device::Named), and otherwise, or when it is not
 /// there, the default device. An empty id or name asks for the default. A
 /// device that cannot give its id or name is never matched by it.
-pub(crate) fn choose(listed: &[Listed], wanted: &crate::Device, direction: Direction) -> Choice {
+///
+/// An input is matched only among the devices [`listable`] offers. cpal lists
+/// every PipeWire sink as capturable (its monitor), ahead of the sources, and
+/// a sink and a source often share a name ("Built-in Audio Analog Stereo"),
+/// so matching among everything that captures would record what the
+/// speakers play. An output is matched among everything cpal lists that
+/// plays, as [`output_device_names`](crate::output_device_names) names them.
+pub(crate) fn choose(
+    host: &str,
+    listed: &[Listed],
+    wanted: &crate::Device,
+    direction: Direction,
+) -> Choice {
     let (by_id, wanted) = match wanted {
         crate::Device::Default => return Choice::Default { missing: None },
         crate::Device::Id(id) => (true, id.as_str()),
@@ -244,10 +257,16 @@ pub(crate) fn choose(listed: &[Listed], wanted: &crate::Device, direction: Direc
             device.name.clone()
         }
     };
+    let candidates: Vec<usize> = match direction {
+        Direction::Output => (0..listed.len())
+            .filter(|&index| listed[index].goes(direction))
+            .collect(),
+        Direction::Input => listable(host, direction, listed),
+    };
     let describe = if by_id { "id" } else { "name" };
-    match listed
-        .iter()
-        .position(|device| device.goes(direction) && key(device).as_deref() == Some(wanted))
+    match candidates
+        .into_iter()
+        .find(|&index| key(&listed[index]).as_deref() == Some(wanted))
     {
         Some(index) => Choice::Listed(index),
         None => Choice::Default {
@@ -680,36 +699,109 @@ mod tests {
         let out = Direction::Output;
         let id = |id: &str| Device::Id(DeviceId::new(id));
         assert_eq!(
-            choose(&devices, &id("alsa_output.usb"), out),
+            choose("coreaudio", &devices, &id("alsa_output.usb"), out),
             Choice::Listed(1)
         );
         // Two devices share the name; the direction tells them apart.
         let named = Device::Named("USB DAC".into());
-        assert_eq!(choose(&devices, &named, out), Choice::Listed(1));
         assert_eq!(
-            choose(&devices, &named, Direction::Input),
+            choose("coreaudio", &devices, &named, out),
             Choice::Listed(1)
         );
         assert_eq!(
-            choose(&devices, &id("alsa_input.usb"), Direction::Input),
+            choose(
+                "coreaudio",
+                &devices,
+                &id("alsa_input.usb"),
+                Direction::Input
+            ),
             Choice::Listed(2)
         );
         // An id is never matched by name, nor a name by id.
         assert_eq!(
-            choose(&devices, &id("Speakers"), out),
+            choose("coreaudio", &devices, &id("Speakers"), out),
             Choice::Default {
                 missing: Some("id \"Speakers\"".into())
             }
         );
         assert_eq!(
-            choose(&devices, &Device::Named("alsa_output.pci".into()), out),
+            choose(
+                "coreaudio",
+                &devices,
+                &Device::Named("alsa_output.pci".into()),
+                out
+            ),
             Choice::Default {
                 missing: Some("name \"alsa_output.pci\"".into())
             }
         );
         // An input's id does not open it as an output.
         assert!(matches!(
-            choose(&devices, &id("alsa_input.usb"), out),
+            choose("coreaudio", &devices, &id("alsa_input.usb"), out),
+            Choice::Default { missing: Some(_) }
+        ));
+    }
+
+    #[test]
+    fn an_input_never_opens_a_sinks_monitor() {
+        use crate::{Device, DeviceId};
+        // As cpal 0.18 lists the FLOW 8 on PipeWire: the sink first, as
+        // duplex because its monitor can be captured, then the source, both
+        // named "FLOW 8 0".
+        let devices = [
+            listed("sink_default", "default_sink", true, true),
+            listed("input_default", "default_input", true, false),
+            listed("alsa_output.hw_F8_0", "FLOW 8 0", true, true),
+            listed("alsa_input.hw_F8_0", "FLOW 8 0", true, false),
+        ];
+        let input = Direction::Input;
+        let named = Device::Named("FLOW 8 0".into());
+        assert_eq!(
+            choose("pipewire", &devices, &named, input),
+            Choice::Listed(3)
+        );
+        // The output by that name is still the sink.
+        assert_eq!(
+            choose("pipewire", &devices, &named, Direction::Output),
+            Choice::Listed(2)
+        );
+        // A sink's id, or the default sink's, records nothing it plays: the
+        // default input opens instead.
+        for sink in ["alsa_output.hw_F8_0", "sink_default"] {
+            assert_eq!(
+                choose(
+                    "pipewire",
+                    &devices,
+                    &Device::Id(DeviceId::new(sink)),
+                    input
+                ),
+                Choice::Default {
+                    missing: Some(format!("id {sink:?}"))
+                }
+            );
+        }
+        assert_eq!(
+            choose(
+                "pipewire",
+                &devices,
+                &Device::Id(DeviceId::new("alsa_input.hw_F8_0")),
+                input
+            ),
+            Choice::Listed(3)
+        );
+        // PulseAudio: a monitor is a source of its own, and is not opened by
+        // its id as an input either.
+        let pulse = [
+            listed("alsa_output.hdmi", "HDMI", false, true),
+            listed("alsa_output.hdmi.monitor", "Monitor of HDMI", true, false),
+        ];
+        assert!(matches!(
+            choose(
+                "pulseaudio",
+                &pulse,
+                &Device::Id(DeviceId::new("alsa_output.hdmi.monitor")),
+                input
+            ),
             Choice::Default { missing: Some(_) }
         ));
     }
@@ -720,17 +812,22 @@ mod tests {
         let devices = [listed("a", "Speakers", false, true)];
         let out = Direction::Output;
         assert_eq!(
-            choose(&devices, &Device::Default, out),
+            choose("coreaudio", &devices, &Device::Default, out),
             Choice::Default { missing: None }
         );
         for blank in [Device::Named("  ".into()), Device::Id(DeviceId::new(""))] {
             assert_eq!(
-                choose(&devices, &blank, out),
+                choose("coreaudio", &devices, &blank, out),
                 Choice::Default { missing: None }
             );
         }
         assert_eq!(
-            choose(&devices, &Device::Named("Headphones".into()), out),
+            choose(
+                "coreaudio",
+                &devices,
+                &Device::Named("Headphones".into()),
+                out
+            ),
             Choice::Default {
                 missing: Some("name \"Headphones\"".into())
             }
@@ -752,11 +849,16 @@ mod tests {
         ];
         let out = Direction::Output;
         assert_eq!(
-            choose(&devices, &Device::Named("output 3".into()), out),
+            choose(
+                "coreaudio",
+                &devices,
+                &Device::Named("output 3".into()),
+                out
+            ),
             Choice::Listed(1)
         );
         assert_eq!(
-            choose(&devices, &Device::Id(DeviceId::new("b")), out),
+            choose("coreaudio", &devices, &Device::Id(DeviceId::new("b")), out),
             Choice::Listed(0)
         );
         // A picker leaves it out until it can be named.
