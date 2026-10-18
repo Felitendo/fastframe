@@ -127,7 +127,10 @@ pub trait Resident {
     /// keep waiting, open a window, or quit.
     ///
     /// `ctx` is a context with no window behind it, reused for the whole
-    /// headless stretch.
+    /// headless stretch. Each tick is one egui pass on it, so what a tick
+    /// asks of it (a repaint, a viewport command, a texture) is let go when
+    /// the tick ends rather than kept for as long as the app runs without a
+    /// window.
     fn headless_frame(&mut self, ctx: &egui::Context) -> Headless;
 
     /// Starts without a window, when the launch asked for that.
@@ -272,7 +275,9 @@ impl<A: Resident> Shell<A> {
             let headless = egui::Context::default();
             with_app(&slot, Resident::window_gone);
             loop {
-                match with_app(&slot, |app| app.headless_frame(&headless)) {
+                match headless_pass(&headless, |ctx| {
+                    with_app(&slot, |app| app.headless_frame(ctx))
+                }) {
                     Some(Headless::Wait) => pause(idle, &waker, HEADLESS_TICK),
                     Some(Headless::WaitFor(wait)) => pause(idle, &waker, wait),
                     Some(Headless::Show) => continue 'windows,
@@ -285,6 +290,21 @@ impl<A: Resident> Shell<A> {
         }
         Ok(())
     }
+}
+
+/// Runs one headless tick as an egui pass on `ctx`.
+///
+/// egui lets go of what a pass collected (the repaint requests and their
+/// causes, viewport commands, texture uploads and frees) only when the pass
+/// ends. A context that never runs one keeps every repaint request an app
+/// makes for as long as it sits in the tray, which grew without bound
+/// (Spotifast #954). Nothing paints the pass, so its textures are dropped.
+fn headless_pass<T>(ctx: &egui::Context, tick: impl FnOnce(&egui::Context) -> T) -> T {
+    ctx.begin_pass(egui::RawInput::default());
+    let answer = tick(ctx);
+    let mut output = ctx.end_pass();
+    output.textures_delta.clear();
+    answer
 }
 
 /// Waits up to `wait` between headless ticks. With an app's `idle`, waits in
@@ -614,6 +634,64 @@ mod tests {
         let waker = Waker::default();
         assert_eq!(run(Shell::new(script(&[], &[], false), &waker), |_| {}), 1);
         assert_eq!(calls(), ["window", "shutdown"]);
+    }
+
+    /// What a tray-resident app asks of the headless context, tick after
+    /// tick, without a window to paint it, and what it found there.
+    #[derive(Default)]
+    struct Repainting {
+        ticks: u32,
+        /// Per tick: the context's pass number and the repaint causes of
+        /// the pass before.
+        seen: Rc<RefCell<Vec<(u64, usize)>>>,
+    }
+
+    impl Resident for Repainting {
+        fn closed(&self) -> Closed {
+            Closed::Hide
+        }
+        fn window_gone(&mut self) {}
+        fn headless_frame(&mut self, ctx: &egui::Context) -> Headless {
+            self.seen
+                .borrow_mut()
+                .push((ctx.cumulative_pass_nr(), ctx.repaint_causes().len()));
+            ctx.request_repaint();
+            ctx.request_repaint_after(Duration::from_millis(250));
+            ctx.send_viewport_cmd(egui::ViewportCommand::Title("Playing".into()));
+            drop(ctx.load_texture("cover", egui::ColorImage::example(), Default::default()));
+            self.ticks += 1;
+            if self.ticks == 100 {
+                Headless::Quit
+            } else {
+                Headless::Wait
+            }
+        }
+        fn shutdown(&mut self) {}
+    }
+
+    /// Spotifast #954: each tick is a pass of its own, so the repaints a
+    /// tick asks for are let go by the next one instead of piling up for as
+    /// long as the app sits in the tray.
+    #[test]
+    fn a_headless_tick_lets_go_of_what_it_asked_of_the_context() {
+        let app = Repainting::default();
+        let seen = Rc::clone(&app.seen);
+        Shell::new(app, &Waker::default())
+            .idle(|_| {})
+            .run(|lease| {
+                drop(lease.take(&egui::Context::default()));
+                Ok::<(), ()>(())
+            })
+            .unwrap();
+        let seen = seen.borrow();
+        assert_eq!(seen.len(), 100);
+        for (tick, (pass, causes)) in seen.iter().enumerate() {
+            assert_eq!(*pass, tick as u64, "one pass per tick");
+            // A tick sees at most what the tick before asked for: its two
+            // repaints, and the ones its command and texture made.
+            assert!(*causes <= 4, "tick {tick} still holds {causes} repaints");
+        }
+        assert!(seen[1].1 > 0, "a tick sees the repaints of the one before");
     }
 
     #[test]

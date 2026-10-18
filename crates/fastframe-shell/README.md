@@ -76,6 +76,10 @@ window's options, such as which kind of window it is.
   false) for as long as the app sits in the tray. On macOS pass `fastframe_tray::idle`,
   which runs AppKit's loop so the menu-bar item keeps answering; it runs in
   ticks, so there a wake is seen at the next one.
+- Each headless tick is one egui pass on the headless context, so what a
+  tick asks of it (repaints, viewport commands, textures) is let go when the
+  tick ends. Without passes, egui kept every repaint request for as long as
+  the app sat in the tray (Spotifast #954).
 - If `run_native` fails, `run` returns the error and the app is dropped
   without `shutdown`, as the apps' `?` did.
 
