@@ -7,6 +7,8 @@
 //! instead, as Spotifast does on Windows, without blocks, so the largest
 //! callback shows the buffer the device gave. `--device <id>` opens a
 //! device by an id from the `devices` example instead of the default.
+//! `--idle-ms <ms>` also shows `pause_when_idle`: the renderer says it has
+//! nothing to play, and the output pauses itself after that long.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -36,6 +38,11 @@ impl Render for Silence {
         self.stats.max_frames.fetch_max(frames, Ordering::Relaxed);
         self.stats.calls.fetch_add(1, Ordering::Relaxed);
     }
+    fn idle(&self) -> bool {
+        // Silence and nothing queued: idle, which matters only with
+        // `pause_when_idle`.
+        true
+    }
 }
 
 #[allow(clippy::print_stdout)]
@@ -51,7 +58,12 @@ fn main() -> Result<(), fastframe_audio::OpenError> {
         .position(|arg| arg == "--device")
         .and_then(|at| args.get(at + 1))
         .map_or(Device::Default, |id| Device::Id(DeviceId::new(id.as_str())));
-    let options = match buffer_ms {
+    let idle_ms = args
+        .iter()
+        .position(|arg| arg == "--idle-ms")
+        .and_then(|at| args.get(at + 1))
+        .and_then(|ms| ms.parse::<u64>().ok());
+    let mut options = match buffer_ms {
         Some(ms) => OutputOptions {
             device,
             buffer: Buffer::Fixed(BufferSize::Duration(Duration::from_millis(ms))),
@@ -64,6 +76,8 @@ fn main() -> Result<(), fastframe_audio::OpenError> {
             ..OutputOptions::default()
         },
     };
+
+    options.pause_when_idle = idle_ms.map(Duration::from_millis);
 
     let stats = Arc::new(Stats::default());
     let renderer = Silence {
@@ -117,5 +131,21 @@ fn main() -> Result<(), fastframe_audio::OpenError> {
         output.maintain(),
         output.take_errors()
     );
+    if let Some(ms) = idle_ms {
+        // The renderer has been idle all along: the next looks pause it.
+        let start = Instant::now();
+        while !output.is_paused() && start.elapsed() < Duration::from_millis(ms + 2000) {
+            let _ = output.maintain();
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        println!(
+            "pause_when_idle {ms} ms: paused {} after {:?}",
+            output.is_paused(),
+            start.elapsed()
+        );
+        report("idle");
+        output.resume();
+        report("resumed after a sound was queued");
+    }
     Ok(())
 }

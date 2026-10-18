@@ -479,6 +479,27 @@ impl SpinWindow {
     }
 }
 
+/// How long an output's renderer has had nothing to play, for
+/// [`OutputOptions::pause_when_idle`](crate::OutputOptions::pause_when_idle).
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct Idle {
+    /// When the renderer was first seen idle, since it last played.
+    since: Option<Instant>,
+}
+
+impl Idle {
+    /// Notes whether the renderer is idle at `now`; true once it has been
+    /// idle at every look for `after`.
+    pub(crate) fn observe(&mut self, idle: bool, now: Instant, after: Duration) -> bool {
+        if !idle {
+            self.since = None;
+            return false;
+        }
+        let since = *self.since.get_or_insert(now);
+        now.saturating_duration_since(since) >= after
+    }
+}
+
 /// How long a playing output may stand still before it counts as stuck: a
 /// few times the longest device buffer.
 pub(crate) const STALL: Duration = Duration::from_secs(2);
@@ -1038,6 +1059,32 @@ mod tests {
             assert_eq!(kind_of(kind), ErrorKind::Recoverable, "{kind:?}");
             assert_eq!(needs_reopen(kind), reopen, "{kind:?}");
         }
+    }
+
+    #[test]
+    fn an_output_pauses_once_it_has_had_nothing_to_play_for_long_enough() {
+        let start = Instant::now();
+        let ms = Duration::from_millis;
+        let after = ms(1000);
+        let mut idle = Idle::default();
+        assert!(!idle.observe(false, start, after), "playing");
+        // Idle from 100 ms: counted from the first look that saw it.
+        assert!(!idle.observe(true, start + ms(100), after));
+        assert!(!idle.observe(true, start + ms(1099), after));
+        assert!(idle.observe(true, start + ms(1100), after));
+        // A sound in between starts the count again.
+        let mut idle = Idle::default();
+        assert!(!idle.observe(true, start, after));
+        assert!(!idle.observe(false, start + ms(900), after));
+        assert!(!idle.observe(true, start + ms(1000), after));
+        assert!(!idle.observe(true, start + ms(1999), after));
+        assert!(idle.observe(true, start + ms(2000), after));
+        // A fresh tracker, as after a resume, waits the whole time again.
+        let mut idle = Idle::default();
+        assert!(!idle.observe(true, start + ms(5000), after));
+        assert!(idle.observe(true, start + ms(6000), after));
+        // Zero pauses at the first look.
+        assert!(Idle::default().observe(true, start, Duration::ZERO));
     }
 
     #[test]

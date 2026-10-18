@@ -90,6 +90,19 @@ pub trait Render: Send + 'static {
     /// [`configure`](Self::configure). Write silence (zeros) when there is
     /// nothing to play. Must not block.
     fn render(&mut self, out: &mut [f32]);
+
+    /// Whether the renderer has nothing to play: nothing queued, nothing
+    /// sounding. Asked on the audio thread after each callback's render
+    /// when [`OutputOptions::pause_when_idle`] is set, so it must be cheap
+    /// and must not block.
+    ///
+    /// Answer `true` only when nothing will sound until the app queues more
+    /// and calls [`Output::resume`]: an idle output is paused, and a paused
+    /// output never renders again by itself. Silence within a sound is not
+    /// idle. By default, never.
+    fn idle(&self) -> bool {
+        false
+    }
 }
 
 /// What takes the sound an [`Input`] captures. It runs on the audio thread.
@@ -231,6 +244,20 @@ pub struct OutputOptions {
     /// has to call it now and then during the pause (every few seconds is
     /// enough), or the device stays open, still costing nothing.
     pub release_after: Option<Duration>,
+    /// Pause the output once [`Render::idle`] has said it has nothing to play
+    /// for this long, so a sound effect player that is quiet most of the
+    /// time costs nothing between sounds. `None`, the default, never does.
+    ///
+    /// [`Output::maintain`] makes the pause, so it comes at the first call
+    /// after that long; give it longer than the output's latency, so the end
+    /// of the last sound has played. From then on the output is paused as by
+    /// [`Output::pause`]: [`Output::is_paused`] says so, and after
+    /// [`release_after`](Self::release_after) the device is let go. The app
+    /// calls [`Output::resume`] whenever it queues a sound: it costs nothing
+    /// when the output is playing, and plays at once (or reopens a device
+    /// let go) when it is paused. See [`Output`] for handles on other
+    /// threads.
+    pub pause_when_idle: Option<Duration>,
 }
 
 impl Default for OutputOptions {
@@ -243,6 +270,7 @@ impl Default for OutputOptions {
             max_block_frames: None,
             follow_default: true,
             release_after: Some(Duration::from_secs(5 * 60)),
+            pause_when_idle: None,
         }
     }
 }
@@ -257,6 +285,7 @@ impl OutputOptions {
             max_block_frames: self.max_block_frames,
             follow_default: self.follow_default,
             release_after: self.release_after,
+            pause_when_idle: self.pause_when_idle,
         }
     }
 }
@@ -301,6 +330,7 @@ impl InputOptions {
             max_block_frames: None,
             follow_default: self.follow_default,
             release_after: None,
+            pause_when_idle: None,
         }
     }
 }
@@ -429,6 +459,41 @@ pub enum Maintained {
 ///
 /// Keep one for as long as the app may play. Pausing costs nothing, and
 /// [`maintain`](Self::maintain) keeps it on a working device.
+///
+/// With [`OutputOptions::pause_when_idle`], the output pauses itself when
+/// the renderer has nothing to play, and the app resumes it when it queues a
+/// sound. The thread that owns the output does both: queue, then
+/// [`resume`](Self::resume). A handle on another thread (a sound effect
+/// player called from the UI) cannot reach the output, so it queues and
+/// tells the owning thread, which calls `resume` before its next
+/// `maintain`: through a channel, or an [`AtomicBool`] it swaps:
+///
+/// ```no_run
+/// # use std::sync::Arc;
+/// # use std::sync::atomic::{AtomicBool, Ordering};
+/// # struct Silence;
+/// # impl fastframe_audio::Render for Silence {
+/// #     fn configure(&mut self, _: u32, _: u16) {}
+/// #     fn render(&mut self, out: &mut [f32]) { out.fill(0.0) }
+/// # }
+/// # let mut output = fastframe_audio::Output::open(Default::default(), Silence)?;
+/// let wake = Arc::new(AtomicBool::new(false));
+/// // The handle, after it queues a sound with the renderer:
+/// wake.store(true, Ordering::Release);
+/// // The owning thread, each turn:
+/// if wake.swap(false, Ordering::AcqRel) {
+///     output.resume();
+/// }
+/// let _ = output.maintain();
+/// # Ok::<(), fastframe_audio::OpenError>(())
+/// ```
+///
+/// A sound queued while the output pauses itself waits for that `resume`,
+/// so wake it after every sound, not only when it was paused: `resume` on a
+/// playing output also tells it the renderer has something to play, so the
+/// next `maintain` does not pause it before the callback has rendered it.
+///
+/// [`AtomicBool`]: std::sync::atomic::AtomicBool
 pub struct Output<R: Render> {
     session: Session<Rendering<R>>,
 }
@@ -483,8 +548,9 @@ impl<R: Render> Output<R> {
     /// cheap when nothing changed.
     ///
     /// It reopens a stream that failed or whose device went away, moves to a
-    /// new default output, and lets the device go after a long pause. A
-    /// failed reopen is not remembered: the next call tries again. Nothing
+    /// new default output, pauses an idle output
+    /// ([`OutputOptions::pause_when_idle`]), and lets the device go after a
+    /// long pause. A failed reopen is not remembered: the next call tries again. Nothing
     /// happens between calls, so keep calling it while paused for
     /// [`OutputOptions::release_after`] to take effect.
     pub fn maintain(&mut self) -> Maintained {

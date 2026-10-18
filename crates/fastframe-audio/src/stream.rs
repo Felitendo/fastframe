@@ -87,6 +87,9 @@ pub(crate) struct Shared {
     /// Counts pauses and resumes, so the callback knows the device's
     /// timeline started again (see [`plan::Timeline`]).
     pub(crate) epoch: std::sync::atomic::AtomicU64,
+    /// What [`Render::idle`] said after the last render, when the output
+    /// pauses when idle.
+    pub(crate) idle: AtomicBool,
 }
 
 impl Shared {
@@ -96,6 +99,7 @@ impl Shared {
             failed: AtomicBool::new(false),
             errors: Mutex::new(Vec::new()),
             epoch: std::sync::atomic::AtomicU64::new(0),
+            idle: AtomicBool::new(false),
         }
     }
 
@@ -140,6 +144,7 @@ pub(crate) struct Settings {
     pub(crate) max_block_frames: Option<u32>,
     pub(crate) follow_default: bool,
     pub(crate) release_after: Option<std::time::Duration>,
+    pub(crate) pause_when_idle: Option<std::time::Duration>,
 }
 
 /// What a stream's callback drives: the app's renderer for an output, its
@@ -166,6 +171,8 @@ pub(crate) struct Callback {
     pub(crate) clock: Clock,
     pub(crate) shared: Arc<Shared>,
     pub(crate) max_block_frames: Option<u32>,
+    /// Ask the renderer whether it is idle after each render.
+    pub(crate) watch_idle: bool,
 }
 
 /// An output's engine: the app's renderer.
@@ -288,6 +295,7 @@ pub(crate) fn open<E: Engine>(
             clock: clock.clone(),
             shared: Arc::clone(shared),
             max_block_frames: options.max_block_frames,
+            watch_idle: options.pause_when_idle.is_some(),
         };
         match E::build(&device, &config, format, Arc::clone(engine), callback) {
             Ok(stream) => {
@@ -537,6 +545,7 @@ where
         clock,
         shared,
         max_block_frames: max_block,
+        watch_idle,
     } = callback;
     let channels = usize::from(config.channels);
     let rate = config.sample_rate;
@@ -558,12 +567,18 @@ where
                     for (start, end) in plan::blocks(scratch.len(), channels, max_block) {
                         renderer.0.render(&mut scratch[start..end]);
                     }
+                    if watch_idle {
+                        shared.idle.store(renderer.0.idle(), Ordering::Relaxed);
+                    }
                     true
                 }
                 Err(std::sync::TryLockError::Poisoned(poisoned)) => {
                     let mut renderer = poisoned.into_inner();
                     for (start, end) in plan::blocks(scratch.len(), channels, max_block) {
                         renderer.0.render(&mut scratch[start..end]);
+                    }
+                    if watch_idle {
+                        shared.idle.store(renderer.0.idle(), Ordering::Relaxed);
                     }
                     true
                 }

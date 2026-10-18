@@ -23,6 +23,8 @@ pub(crate) struct Session<E: Engine> {
     resumed: bool,
     /// Whether the clock still moves while running.
     stall: plan::Stall,
+    /// How long the renderer has had nothing to play.
+    idle: plan::Idle,
     watch: Option<DefaultWatch>,
     device: String,
     id: DeviceId,
@@ -71,6 +73,7 @@ impl<E: Engine> Session<E> {
             paused_at: None,
             resumed: false,
             stall: plan::Stall::new(Duration::ZERO, Instant::now()),
+            idle: plan::Idle::default(),
             watch,
         })
     }
@@ -81,6 +84,7 @@ impl<E: Engine> Session<E> {
         }
         self.paused = true;
         self.paused_at = Some(Instant::now());
+        self.idle = plan::Idle::default();
         self.shared.epoch.fetch_add(1, Ordering::Relaxed);
         if let Some(live) = &self.live {
             use cpal::traits::StreamTrait;
@@ -92,6 +96,11 @@ impl<E: Engine> Session<E> {
     }
 
     pub(crate) fn resume(&mut self) {
+        // The app has just given the renderer something to play, so what it
+        // said before is stale, even while playing: the next `maintain`
+        // must not pause before the callback has rendered it.
+        self.idle = plan::Idle::default();
+        self.shared.idle.store(false, Ordering::Relaxed);
         if !self.paused {
             return;
         }
@@ -125,6 +134,21 @@ impl<E: Engine> Session<E> {
     pub(crate) fn maintain(&mut self) -> Maintained {
         if std::mem::take(&mut self.resumed) {
             return self.reopened(Reason::Resumed);
+        }
+        if let Some(after) = self.settings.pause_when_idle
+            && !self.paused
+            && self.live.is_some()
+            && self.idle.observe(
+                self.shared.idle.load(Ordering::Relaxed),
+                Instant::now(),
+                after,
+            )
+        {
+            log::debug!(
+                "audio {}: nothing to play for {after:?}; pausing",
+                E::DIRECTION.label()
+            );
+            self.pause();
         }
         if self.paused
             && self.live.is_some()

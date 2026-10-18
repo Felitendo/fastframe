@@ -198,6 +198,18 @@ it from a thread pool shared with other work.
   `Reopened`. `maintain()` is what lets it go, so an app whose audio thread
   sleeps while paused calls it every few seconds during the pause, or the
   device stays open (still with no callbacks).
+- `pause_when_idle`: pause the output once the renderer's `Render::idle()`
+  has said it has nothing to play for this long (off by default; `idle()`
+  says `false` unless the renderer answers it). For a sound effect player
+  that is quiet most of the time: between sounds it costs nothing, and
+  after `release_after` the device is let go. `maintain()` makes the
+  pause, so make it longer than the output's latency, so the last sound's
+  end has played. The app calls `resume()` every time it queues a sound;
+  that costs nothing while playing. A handle on another thread queues the
+  sound and tells the thread that owns the output (a channel, or an
+  `AtomicBool` the owner swaps before each `maintain()`), which calls
+  `resume()`. `idle()` must say `true` only when nothing sounds until the
+  app queues more: a paused output never renders by itself.
 
 The output opens at the preferred rate, then at the device's own, each with
 the fixed buffer when one was asked for, then with the driver's buffer, then
@@ -209,8 +221,10 @@ from the renderer's `f32`.
 `maintain()` is cheap when nothing changed. It reopens a stream that failed
 or whose device went away, or that stopped asking for sound without saying
 so (its clock stood still for two seconds while playing, as some drivers do
-when a device is rerouted), moves to a new default output, and lets the
-device go after a long pause. Nothing happens between calls, so keep calling
+when a device is rerouted), moves to a new default output, pauses an idle
+output (`pause_when_idle`, which it reports as `Unchanged`, with
+`is_paused()` turning true), and lets the device go after a long pause.
+Nothing happens between calls, so keep calling
 it, playing or paused, at least every second or so. It returns what it did:
 
 - `Unchanged`;
