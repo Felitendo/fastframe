@@ -89,6 +89,28 @@ device. On PipeWire the default is found through its PulseAudio server; a
 system without one marks no device the default. `output_device_names()`
 still returns every name cpal lists, as before.
 
+## rodio's mixer
+
+With the `rodio` feature (off by default), `MixerRender` is a renderer that
+plays rodio's mixer. The output configures it when it opens a stream: the
+same format keeps the mixer, so a reopen on another device carries on from
+the same sample, and another rate or channel count makes a new mixer, which
+the app takes from the `MixerSlot` (`slot.take()`, after `open` and after
+each `Reopened`) and adds its sources to from then on. It is idle while the
+mixer has nothing to play, so with `pause_when_idle` the output pauses
+between sounds; call `resume()` after adding one.
+
+```rust
+let (render, slot) = fastframe_audio::MixerRender::new();
+let mut output = Output::open(OutputOptions::default(), render)?;
+let mixer = slot.take().expect("opening made one").mixer;
+mixer.add(source); // any rodio Source
+output.resume();
+```
+
+rodio comes in without its default features: only its mixer and sources,
+not its own cpal output nor its decoders.
+
 ## Capturing
 
 `Input` is an `Output` the other way round, opened with `InputOptions` and
@@ -289,6 +311,10 @@ callback and the clock while playing, paused and resumed, and how soon the
 first callback follows `resume()`. `-- --buffer-ms 100` asks for a fixed
 100 ms buffer instead of Solco's 512 frames. A paused output got no calls on
 ALSA, PulseAudio, PipeWire and WASAPI alike.
+
+`cargo run -p fastframe-audio --features rodio --example mixer` plays two
+quarter-second 440 Hz tones at -40 dBFS through `MixerRender`, and shows the
+output pausing itself after each.
 
 `cargo run -p fastframe-audio --example capture` opens the default input,
 measures what it captures (how many samples, the loudest) and drops it,

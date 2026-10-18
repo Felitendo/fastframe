@@ -1127,3 +1127,40 @@ portable, so nothing moves for installed copies or on Linux and macOS.
   put in place.
 
 Spotifast is the first app on it.
+
+## fastframe-audio 0.12
+
+Output with the app's renderer, and since 0.12 input into the app's
+capturer, device ids, an idle pause and an optional rodio mixer. Upgrading
+to 0.12 needs no change: `Maintained`, `Device::Named` and
+`output_device_names()` are as they were.
+
+### Solco
+
+Nothing to change. Its match on `Maintained::Reopened { device,
+sample_rate, channels, reason }` in `src/preview.rs` still compiles. To
+tell devices apart by id rather than by name when it decides the output
+`Moved`, read `output.device_id()` after a `Reopened`.
+
+### Spotifast
+
+Nothing is required: `Device::Named` and `output_device_names()` behave as
+before. Later, as separate changes:
+
+- Save the device's id rather than its name: list with `output_devices()`,
+  save `DeviceInfo::id`, open with `Device::Id`. A name saved by an earlier
+  version still opens through `Device::Named`, so read an old setting as a
+  name and write it back as the id of the device it opened
+  (`Output::device_id()`, which after a `Reopened` is the new device's).
+- `src/sink.rs`'s `MixerRender` (about 40 lines) applies its volume ramp in
+  `render`, which the crate's `MixerRender` (the `rodio` feature) does not.
+  Move the ramp into a rodio source in front of the mixer first, or keep the
+  app's adapter.
+
+### ZapFast
+
+Its call audio (`src/call_audio.rs`) records through rodio's microphone and
+plays through rodio's output. `Input` and `Output` cover both, with the
+pause, reopen and real-time behaviour Spotifast and Solco have; moving is a
+separate change in ZapFast, once its echo and resampling needs are checked
+against them.

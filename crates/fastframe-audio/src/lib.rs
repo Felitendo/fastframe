@@ -55,6 +55,8 @@
 
 mod clock;
 mod feeder;
+#[cfg(feature = "rodio")]
+mod mixer;
 #[cfg(target_os = "windows")]
 mod mmcss;
 mod plan;
@@ -68,6 +70,8 @@ use std::time::Duration;
 
 pub use clock::Clock;
 pub use feeder::raise_feeder_priority;
+#[cfg(feature = "rodio")]
+pub use mixer::{MixerRender, MixerSlot, NewMixer};
 
 use session::Session;
 use stream::{Capturing, Rendering, Settings};

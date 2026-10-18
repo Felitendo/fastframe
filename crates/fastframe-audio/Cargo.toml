@@ -17,6 +17,9 @@ categories = ["multimedia::audio"]
 # compiled in (below); elsewhere cpal has no such hosts.
 pulseaudio = ["cpal/pulseaudio"]
 pipewire = ["cpal/pipewire"]
+# `MixerRender`: a renderer that plays rodio's mixer, for apps that mix with
+# rodio. Off by default.
+rodio = ["dep:rodio"]
 
 [dependencies]
 # The device stream. 0.18 is the version Solco builds with and kira 0.12
@@ -24,6 +27,11 @@ pipewire = ["cpal/pipewire"]
 cpal = "0.18.1"
 # Device changes, reopens and errors are logged as the other crates log.
 log.workspace = true
+# rodio's mixer, for `MixerRender` (the `rodio` feature). 0.21 is the version
+# Spotifast mixes with. Without default features, so neither its `playback`
+# (which would bring cpal 0.16 and a second output stream) nor its decoders
+# come in: only the mixer and sources, on `dasp_sample` and `num-rational`.
+rodio = { version = "0.21", default-features = false, optional = true }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 # Registers the stream's thread with the Multimedia Class Scheduler Service.
@@ -49,6 +57,10 @@ libc = "0.2"
 # clang (`libpipewire-0.3-dev clang libclang-dev` on Debian and Ubuntu).
 cpal = { version = "0.18.1", features = ["pipewire", "pulseaudio"] }
 zbus = { version = "5.19", default-features = false, features = ["blocking-api", "async-io"] }
+
+[[example]]
+name = "mixer"
+required-features = ["rodio"]
 
 # The workspace forbids unsafe code. Joining MMCSS and raising a thread's
 # priority are one OS call each, so this crate carries the workspace's lints
