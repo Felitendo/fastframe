@@ -304,7 +304,13 @@ impl OutputOptions {
 pub struct InputOptions {
     /// The device, an id from [`input_devices`] or its name.
     pub device: Device,
-    /// Channels to ask for; `0`, the default, takes the device's own.
+    /// Channels the capturer takes; `0`, the default, takes the source's
+    /// own. The stream always opens at the source's own channels, and other
+    /// counts are made from them: a mono source in every channel, many
+    /// channels averaged down to mono, and otherwise the channels both have,
+    /// with the rest silent. (cpal's PipeWire host would link a stereo
+    /// stream to a mono microphone's one channel and leave the other
+    /// silent.)
     pub channels: u16,
     /// A sample rate to try first; `None` takes the device's default rate.
     pub sample_rate: Option<u32>,
@@ -450,7 +456,8 @@ pub enum Maintained {
         device: String,
         /// The new stream's sample rate.
         sample_rate: u32,
-        /// The new stream's channel count.
+        /// The new stream's channel count: for an input, the channels its
+        /// capturer gets.
         channels: u16,
         /// Why.
         reason: Reason,
@@ -708,7 +715,8 @@ impl<C: Capture> Input<C> {
         self.session.sample_rate()
     }
 
-    /// The stream's channel count.
+    /// The channels the capturer gets, as [`Capture::configure`] was told:
+    /// what [`InputOptions::channels`] asked for, or the source's own.
     #[must_use]
     pub fn channels(&self) -> u16 {
         self.session.channels()

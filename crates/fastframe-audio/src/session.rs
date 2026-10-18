@@ -34,7 +34,8 @@ pub(crate) struct Session<E: Engine> {
     own_id: String,
     host: String,
     /// The id to report, found once per stream: on PipeWire's default it
-    /// takes a connection to its PulseAudio server, which no open waits for.
+    /// takes a connection to its PulseAudio server, which only an input's
+    /// open waits for (for the source's channels), and an output's does not.
     id: OnceLock<DeviceId>,
     sample_rate: u32,
     channels: u16,
@@ -75,7 +76,11 @@ impl<E: Engine> Session<E> {
             device: live.device.clone(),
             own_id: live.own_id.clone(),
             host: live.host.clone(),
-            id: OnceLock::new(),
+            id: live
+                .reported_id
+                .clone()
+                .map(OnceLock::from)
+                .unwrap_or_default(),
             sample_rate: live.sample_rate,
             channels: live.channels,
             settings,
@@ -268,7 +273,11 @@ impl<E: Engine> Session<E> {
                 self.device = live.device.clone();
                 self.own_id = live.own_id.clone();
                 self.host = live.host.clone();
-                self.id = OnceLock::new();
+                self.id = live
+                    .reported_id
+                    .clone()
+                    .map(OnceLock::from)
+                    .unwrap_or_default();
                 self.sample_rate = live.sample_rate;
                 self.channels = live.channels;
                 self.live = Some(live);
@@ -372,6 +381,7 @@ mod tests {
             sample_rate: 48_000,
             channels: 2,
             default_at_open: None,
+            reported_id: None,
         })
     }
 

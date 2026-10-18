@@ -141,11 +141,27 @@ let _ = input.maintain(); // now and then, as for an output
 It opens, falls back, pauses, reopens, follows the default input and
 classifies errors as an output does, with the same real-time callback
 thread on the same devices. `InputOptions` has `device` (an id from
-`input_devices()`), `channels` (`0`, the default, takes the device's own),
+`input_devices()`), `channels` (`0`, the default, takes the source's own),
 `sample_rate`, `buffer` (on PulseAudio `Buffer::Driver` asks for 20 ms, as
 for an output) and `follow_default`. A paused input keeps its device open,
 and is never let go after a pause; drop it to let the device go. Opening it
 may make the system ask the user for the microphone.
+
+The stream opens at the source's own channels, whatever `channels` asks,
+and the capturer gets the channels it asked for, made from them without
+allocating on the audio thread:
+
+- a mono source in every channel;
+- many channels down to mono by their average;
+- otherwise the channels both have, with the rest silent.
+
+`Capture::configure`, `Input::channels()` and `Reopened` give the channels
+the capturer gets. cpal's PipeWire host links a stream's channels to the
+source's one to one without mixing, so a stereo stream on a mono
+microphone had its right channel silent. cpal's PipeWire default input
+says two channels whatever the source, so opening the default asks
+PipeWire's PulseAudio server how many its default source has (about
+6 ms), and `device_id()` then needs no second asking.
 
 Its `Clock` counts what was handed to the capturer, `latency()` is how long
 before the callback the device captured it, and `underruns()` counts the
@@ -319,8 +335,9 @@ quarter-second 440 Hz tones at -40 dBFS through `MixerRender`, and shows the
 output pausing itself after each.
 
 `cargo run -p fastframe-audio --example capture` opens the default input,
-measures what it captures (how many samples, the loudest) and drops it,
-capturing, paused and resumed. Nothing is saved or sent. `--example devices`
+measures what it captures (how many samples, the loudest in each channel)
+and drops it, capturing, paused and resumed; `-- --channels 2` asks for
+two channels. Nothing is saved or sent. `--example devices`
 lists the outputs and inputs with their ids, and `-- --device <id>` opens
 one in `idle` or `capture`.
 

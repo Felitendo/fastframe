@@ -180,10 +180,16 @@ pub(crate) struct Live {
     /// The host it is on, as cpal names it in ids (`pipewire`).
     pub(crate) host: String,
     pub(crate) sample_rate: u32,
+    /// The channels the renderer or capturer works in (an input's stream
+    /// itself is at the source's own, see [`plan::source_channels`]).
     pub(crate) channels: u16,
     /// The default device's id when this stream opened on it, for noticing
     /// that the default changed.
     pub(crate) default_at_open: Option<String>,
+    /// The id to report, when opening already found it: on PipeWire's
+    /// default input, asked of its PulseAudio server for the source's
+    /// channels.
+    pub(crate) reported_id: Option<DeviceId>,
 }
 
 /// How a stream is opened, from [`OutputOptions`](crate::OutputOptions) or
@@ -227,6 +233,10 @@ pub(crate) struct Callback {
     pub(crate) max_block_frames: Option<u32>,
     /// Ask the renderer whether it is idle after each render.
     pub(crate) watch_idle: bool,
+    /// The channels the engine works in. An output's are the stream's; an
+    /// input's capturer can take others, which the callback remixes to
+    /// ([`plan::remix`]).
+    pub(crate) channels: u16,
 }
 
 /// An output's engine: the app's renderer.
@@ -286,11 +296,30 @@ pub(crate) fn open<E: Engine>(
     let (device, default_at_open) = pick(&host, &options.device, direction)?;
     let name = device_name(&device).map_err(OpenError::from)?;
     let own_id = own_id(&device);
+    let host_name = host.id().to_string();
     let default = match direction {
         Direction::Output => device.default_output_config(),
         Direction::Input => device.default_input_config(),
     }
     .map_err(OpenError::from)?;
+    // An input opens at the source's own channels; on PipeWire's default
+    // that takes asking its PulseAudio server, which also names the source.
+    let mut reported_id = None;
+    let own_channels = match direction {
+        Direction::Output => default.channels(),
+        Direction::Input => plan::source_channels(&host_name, &own_id, default.channels(), || {
+            let source = server_default(&host_name, direction)?;
+            reported_id = Some(DeviceId::new(self::own_id(&source)));
+            source
+                .default_input_config()
+                .ok()
+                .map(|config| config.channels())
+        }),
+    };
+    let stream_channels = match direction {
+        Direction::Output => options.channels,
+        Direction::Input => 0,
+    };
     let range = match *default.buffer_size() {
         cpal::SupportedBufferSize::Range { min, max } => Some((min, max)),
         cpal::SupportedBufferSize::Unknown => None,
@@ -315,12 +344,12 @@ pub(crate) fn open<E: Engine>(
     let tried = plan::candidates(
         &plan::Wanted {
             sample_rate: options.sample_rate,
-            channels: options.channels,
-            buffer: plan::buffer_for(options.buffer, &host.id().to_string(), cfg!(windows)),
+            channels: stream_channels,
+            buffer: plan::buffer_for(options.buffer, &host_name, cfg!(windows)),
         },
         &plan::Offered {
             rates: (default.sample_rate(), default.sample_rate()),
-            channels: default.channels(),
+            channels: own_channels,
             format: default.sample_format(),
         },
         range,
@@ -341,15 +370,17 @@ pub(crate) fn open<E: Engine>(
                 .buffer_frames
                 .map_or(cpal::BufferSize::Default, cpal::BufferSize::Fixed),
         };
+        let engine_channels = plan::engine_channels(direction, options.channels, channels);
         engine
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .configure(attempt.sample_rate, channels);
+            .configure(attempt.sample_rate, engine_channels);
         let callback = Callback {
             clock: clock.clone(),
             shared: Arc::clone(shared),
             max_block_frames: options.max_block_frames,
             watch_idle: options.pause_when_idle.is_some(),
+            channels: engine_channels,
         };
         match E::build(&device, &config, format, Arc::clone(engine), callback) {
             Ok(stream) => {
@@ -359,8 +390,13 @@ pub(crate) fn open<E: Engine>(
                     stream.play().map_err(OpenError::from)?;
                 }
                 log::info!(
-                    "audio {label}: {name} at {} Hz, {channels} channels, {}, through {}",
+                    "audio {label}: {name} at {} Hz, {channels} channels{}, {}, through {}",
                     attempt.sample_rate,
+                    if engine_channels == channels {
+                        String::new()
+                    } else {
+                        format!(" as {engine_channels}")
+                    },
                     attempt
                         .buffer_frames
                         .map_or("the driver's buffer".to_owned(), |frames| format!(
@@ -374,8 +410,9 @@ pub(crate) fn open<E: Engine>(
                     own_id,
                     host: host.id().to_string(),
                     sample_rate: attempt.sample_rate,
-                    channels,
+                    channels: engine_channels,
                     default_at_open,
+                    reported_id,
                 });
             }
             Err(error) => {
@@ -489,18 +526,19 @@ fn listed(device: &cpal::Device) -> plan::Listed {
     }
 }
 
-/// The id of the device behind cpal's PipeWire default devices, which name
-/// none: PipeWire's PulseAudio server's default sink or source. `None`
-/// without that server, or on other hosts, which open a device of their own.
+/// The device behind cpal's PipeWire default devices, which name none:
+/// PipeWire's PulseAudio server's default sink or source. `None` without
+/// that server, or on other hosts, which open a device of their own.
 ///
 /// It connects to that server, which takes about 10 ms, and up to cpal's
 /// two seconds when the server does not answer, so it is only asked when an
-/// app wants the id.
-fn server_default(host: &str, direction: Direction) -> Option<String> {
+/// app wants the id, or opens the default input, whose channels cpal's
+/// PipeWire host does not know.
+fn server_default(host: &str, direction: Direction) -> Option<cpal::Device> {
     #[cfg(target_os = "linux")]
     if host == "pipewire" && cpal::available_hosts().contains(&cpal::HostId::PulseAudio) {
         let pulse = cpal::host_from_id(cpal::HostId::PulseAudio).ok()?;
-        return default_device(&pulse, direction).map(|device| own_id(&device));
+        return default_device(&pulse, direction);
     }
     let _ = (host, direction);
     None
@@ -513,7 +551,7 @@ pub(crate) fn reported_id(host: &str, own: &str, direction: Direction) -> Device
     if plan::is_pipewire_default(host, own)
         && let Some(server) = server_default(host, direction)
     {
-        return DeviceId::new(server);
+        return DeviceId::new(own_id(&server));
     }
     DeviceId::new(own)
 }
@@ -529,7 +567,7 @@ pub(crate) fn devices(direction: Direction) -> Result<Vec<DeviceInfo>, OpenError
     let default = default_device(&host, direction).map(|device| {
         let id = own_id(&device);
         if plan::is_pipewire_default(&host.id().to_string(), &id) {
-            server_default(&host.id().to_string(), direction)
+            server_default(&host.id().to_string(), direction).map(|device| own_id(&device))
         } else {
             Some(id)
         }
@@ -603,6 +641,7 @@ where
         shared,
         max_block_frames: max_block,
         watch_idle,
+        channels: _,
     } = callback;
     let channels = usize::from(config.channels);
     let rate = config.sample_rate;
@@ -683,10 +722,29 @@ where
     f32: cpal::FromSample<T>,
     C: Capture,
 {
-    let Callback { clock, shared, .. } = callback;
+    let Callback {
+        clock,
+        shared,
+        channels: wanted,
+        ..
+    } = callback;
     let channels = usize::from(config.channels);
+    let wanted = usize::from(wanted);
     let rate = config.sample_rate;
-    let mut scratch: Vec<f32> = Vec::new();
+    // Sized here for a fixed buffer; with the driver's, they grow to the
+    // largest callback and are reused from then on.
+    let frames = match config.buffer_size {
+        cpal::BufferSize::Fixed(frames) => frames as usize,
+        cpal::BufferSize::Default => 0,
+    };
+    let mut scratch: Vec<f32> = Vec::with_capacity(frames * channels);
+    // What the capturer takes when it asked for other channels than the
+    // source's (`plan::remix`).
+    let mut mixed: Vec<f32> = Vec::with_capacity(if wanted == channels {
+        0
+    } else {
+        frames * wanted
+    });
     let errors = Arc::clone(&shared);
     let mut timeline = plan::Timeline::default();
     let mut thread = Thread::new(device, Direction::Input);
@@ -696,12 +754,18 @@ where
             thread.on_callback();
             scratch.clear();
             scratch.extend(data.iter().map(|sample| sample.to_sample::<f32>()));
+            let block: &[f32] = if wanted == channels {
+                &scratch
+            } else {
+                plan::remix(&scratch, channels, wanted, &mut mixed);
+                &mixed
+            };
             // As for an output: a contended lock drops this block rather
             // than wait.
             match capturer.try_lock() {
-                Ok(mut capturer) => capturer.0.capture(&scratch),
+                Ok(mut capturer) => capturer.0.capture(block),
                 Err(std::sync::TryLockError::Poisoned(poisoned)) => {
-                    poisoned.into_inner().0.capture(&scratch);
+                    poisoned.into_inner().0.capture(block);
                 }
                 Err(std::sync::TryLockError::WouldBlock) => {}
             }

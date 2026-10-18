@@ -5,11 +5,13 @@
 //!
 //! It captures for a second, pauses for a second to show that a paused input
 //! gets no callbacks, and captures for another second. `--device <id>` opens
-//! an input by an id from the `devices` example instead of the default, and
-//! `--name <name>` by its name.
+//! an input by an id from the `devices` example instead of the default,
+//! `--name <name>` by its name, and `--channels <n>` asks for that many
+//! channels instead of the device's own. The loudest sample is shown for
+//! each channel (the first eight).
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU16, AtomicU32, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use fastframe_audio::{Capture, Device, DeviceId, Input, InputOptions};
@@ -18,8 +20,11 @@ use fastframe_audio::{Capture, Device, DeviceId, Input, InputOptions};
 struct Stats {
     calls: AtomicU64,
     samples: AtomicU64,
-    /// The loudest sample since the last report, as `f32` bits.
-    peak: AtomicU32,
+    /// The channels the capturer was configured with.
+    channels: AtomicU16,
+    /// The loudest sample of each channel since the last report, as `f32`
+    /// bits.
+    peaks: [AtomicU32; 8],
 }
 
 struct Meter {
@@ -27,13 +32,20 @@ struct Meter {
 }
 
 impl Capture for Meter {
-    fn configure(&mut self, _sample_rate: u32, _channels: u16) {}
+    fn configure(&mut self, _sample_rate: u32, channels: u16) {
+        self.stats.channels.store(channels, Ordering::Relaxed);
+    }
 
     fn capture(&mut self, input: &[f32]) {
-        let peak = input
-            .iter()
-            .fold(0.0_f32, |peak, sample| peak.max(sample.abs()));
-        self.stats.peak.fetch_max(peak.to_bits(), Ordering::Relaxed);
+        let channels = usize::from(self.stats.channels.load(Ordering::Relaxed)).max(1);
+        for (channel, peak) in self.stats.peaks.iter().enumerate().take(channels) {
+            let loudest = input
+                .iter()
+                .skip(channel)
+                .step_by(channels)
+                .fold(0.0_f32, |loudest, sample| loudest.max(sample.abs()));
+            peak.fetch_max(loudest.to_bits(), Ordering::Relaxed);
+        }
         self.stats
             .samples
             .fetch_add(input.len() as u64, Ordering::Relaxed);
@@ -56,6 +68,12 @@ fn main() -> Result<(), fastframe_audio::OpenError> {
                 .map(|name| Device::Named(name.clone()))
         })
         .unwrap_or(Device::Default);
+    let channels = args
+        .iter()
+        .position(|arg| arg == "--channels")
+        .and_then(|at| args.get(at + 1))
+        .and_then(|count| count.parse().ok())
+        .unwrap_or(0);
 
     let stats = Arc::new(Stats::default());
     let meter = Meter {
@@ -65,6 +83,7 @@ fn main() -> Result<(), fastframe_audio::OpenError> {
     let mut input = Input::open(
         InputOptions {
             device,
+            channels,
             ..InputOptions::default()
         },
         meter,
@@ -82,7 +101,9 @@ fn main() -> Result<(), fastframe_audio::OpenError> {
     );
 
     let report = |what: &str| {
-        stats.peak.store(0, Ordering::Relaxed);
+        for peak in &stats.peaks {
+            peak.store(0, Ordering::Relaxed);
+        }
         let before = (
             stats.calls.load(Ordering::Relaxed),
             stats.samples.load(Ordering::Relaxed),
@@ -94,12 +115,19 @@ fn main() -> Result<(), fastframe_audio::OpenError> {
             stats.samples.load(Ordering::Relaxed),
             clock.played(),
         );
-        let peak = f32::from_bits(stats.peak.load(Ordering::Relaxed));
-        let level = if peak > 0.0 {
-            format!("{:.1} dBFS", 20.0 * peak.log10())
-        } else {
-            "silence".to_owned()
-        };
+        let channels = usize::from(stats.channels.load(Ordering::Relaxed)).clamp(1, 8);
+        let level = stats.peaks[..channels]
+            .iter()
+            .map(|peak| {
+                let peak = f32::from_bits(peak.load(Ordering::Relaxed));
+                if peak > 0.0 {
+                    format!("{:.1} dBFS", 20.0 * peak.log10())
+                } else {
+                    "silence".to_owned()
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" | ");
         println!(
             "{what}: {} callbacks, {} samples, loudest {level}, captured {:?} -> {:?}, latency {:?}",
             after.0 - before.0,

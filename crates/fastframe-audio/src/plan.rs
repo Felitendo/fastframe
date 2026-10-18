@@ -139,6 +139,59 @@ pub(crate) fn candidates(
     out
 }
 
+/// The channels an input's stream is opened at: the source's own, whatever
+/// the app asked for, which [`remix`] then turns into the app's. cpal's
+/// PipeWire host links a stream's channels to the source's one to one,
+/// without mixing, so a stereo stream on a mono microphone captured silence
+/// on the right and half the level. `reported` is what the device says;
+/// cpal's PipeWire default input always says two, so for it the source's
+/// own come from `server`, PipeWire's PulseAudio server's default source,
+/// which is only asked then.
+pub(crate) fn source_channels(
+    host: &str,
+    id: &str,
+    reported: u16,
+    server: impl FnOnce() -> Option<u16>,
+) -> u16 {
+    if is_pipewire_default(host, id) {
+        server()
+            .filter(|&channels| channels > 0)
+            .unwrap_or(reported)
+    } else {
+        reported
+    }
+}
+
+/// The channels the app's renderer or capturer works in on a stream opened
+/// at `opened`: an output's renderer fills the stream's, and an input's
+/// capturer takes what the app `asked` for, or the stream's when it asked
+/// for none (`0`).
+pub(crate) fn engine_channels(direction: Direction, asked: u16, opened: u16) -> u16 {
+    match direction {
+        Direction::Input if asked > 0 => asked,
+        _ => opened,
+    }
+}
+
+/// Turns interleaved `input` in `from` channels into `out` in `to`: a mono
+/// source to every channel, many channels down to mono by their average,
+/// and otherwise the channels both have, with the rest silent. `out` is
+/// cleared and refilled, so once it has grown to a callback's size it is
+/// reused without allocating. A partial frame at the end is dropped.
+pub(crate) fn remix(input: &[f32], from: usize, to: usize, out: &mut Vec<f32>) {
+    let (from, to) = (from.max(1), to.max(1));
+    out.clear();
+    out.resize(input.len() / from * to, 0.0);
+    let shared = from.min(to);
+    for (frame, mixed) in input.chunks_exact(from).zip(out.chunks_exact_mut(to)) {
+        match frame {
+            [mono] => mixed.fill(*mono),
+            _ if to == 1 => mixed.fill(frame.iter().sum::<f32>() / from as f32),
+            _ => mixed[..shared].copy_from_slice(&frame[..shared]),
+        }
+    }
+}
+
 /// The buffer to ask for. PulseAudio's own target is about two seconds, for
 /// playback and recording alike, which no app means by the driver's
 /// buffer; it is asked for 20 ms, about a PipeWire quantum, instead.
@@ -1080,6 +1133,91 @@ mod tests {
             ..wanted
         };
         assert_eq!(candidates(&stereo, &default, None, &[])[0].channels, 2);
+    }
+
+    #[test]
+    fn an_input_opens_at_the_sources_own_channels_and_hands_the_apps() {
+        let never = || -> Option<u16> { panic!("only PipeWire's default asks its server") };
+        // A mono FLOW 8 microphone by id: its own one channel, whatever the
+        // app asks for, and the app gets the two it asked for.
+        let mic = "alsa_input.usb-Behringer_FLOW_8.Recording__Mic1__source";
+        let opened = source_channels("pipewire", mic, 1, never);
+        assert_eq!(opened, 1);
+        let wanted = Wanted {
+            sample_rate: None,
+            channels: 0,
+            buffer: None,
+        };
+        let device = Offered {
+            rates: (48_000, 48_000),
+            channels: opened,
+            format: cpal::SampleFormat::F32,
+        };
+        assert_eq!(candidates(&wanted, &device, None, &[])[0].channels, 1);
+        assert_eq!(engine_channels(Direction::Input, 2, opened), 2);
+        assert_eq!(engine_channels(Direction::Input, 0, opened), 1);
+        // cpal's PipeWire default input says two channels whatever the
+        // source: the server's default source says how many it has.
+        assert_eq!(
+            source_channels("pipewire", "input_default", 2, || Some(1)),
+            1
+        );
+        assert_eq!(source_channels("pipewire", "input_default", 2, || None), 2);
+        assert_eq!(
+            source_channels("pipewire", "input_default", 2, || Some(0)),
+            2
+        );
+        // Elsewhere the device's own word holds.
+        assert_eq!(source_channels("pulseaudio", "input_default", 2, never), 2);
+        assert_eq!(source_channels("alsa", "hw:CARD=FLOW8,DEV=0", 4, never), 4);
+        // An output's renderer fills what the stream opened at.
+        assert_eq!(engine_channels(Direction::Output, 2, 6), 6);
+    }
+
+    #[test]
+    fn a_mono_source_fills_every_channel() {
+        let mut out = Vec::new();
+        remix(&[0.5, -0.25], 1, 2, &mut out);
+        assert_eq!(out, [0.5, 0.5, -0.25, -0.25]);
+        remix(&[0.5], 1, 4, &mut out);
+        assert_eq!(out, [0.5; 4]);
+    }
+
+    #[test]
+    fn many_channels_are_averaged_down_to_mono() {
+        let mut out = Vec::new();
+        remix(&[0.5, 0.0, 1.0, -1.0], 2, 1, &mut out);
+        assert_eq!(out, [0.25, 0.0]);
+        remix(&[0.25, 0.5, 0.75, 0.5], 4, 1, &mut out);
+        assert_eq!(out, [0.5]);
+    }
+
+    #[test]
+    fn otherwise_the_shared_channels_are_copied_and_the_rest_are_silent() {
+        let mut out = Vec::new();
+        // Four channels to two keeps the first two.
+        remix(&[0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8], 4, 2, &mut out);
+        assert_eq!(out, [0.1, 0.2, 0.5, 0.6]);
+        // Two to four leaves the other two silent.
+        remix(&[0.1, 0.2], 2, 4, &mut out);
+        assert_eq!(out, [0.1, 0.2, 0.0, 0.0]);
+        // The same count is a copy, and a partial frame is dropped.
+        remix(&[0.1, 0.2, 0.3], 2, 2, &mut out);
+        assert_eq!(out, [0.1, 0.2]);
+    }
+
+    #[test]
+    fn remixing_reuses_its_buffer() {
+        let mut out = Vec::with_capacity(8);
+        let at = out.as_ptr();
+        for _ in 0..3 {
+            remix(&[0.5; 4], 1, 2, &mut out);
+            assert_eq!(out.len(), 8);
+        }
+        assert_eq!(out.as_ptr(), at);
+        // A smaller block keeps what was there.
+        remix(&[0.5; 2], 1, 2, &mut out);
+        assert_eq!((out.len(), out.capacity(), out.as_ptr()), (4, 8, at));
     }
 
     #[test]
