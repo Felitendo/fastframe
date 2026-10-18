@@ -1,9 +1,9 @@
 # fastframe-audio
 
-Audio output for egui apps: one device stream that costs nothing while
-paused, follows the default output, and reopens after a failure. The app's
-own renderer fills it: a rodio mixer, a kira renderer, or a decoder of its
-own.
+Audio output and input for egui apps: one device stream that costs nothing
+while paused, follows the default device, and reopens after a failure. The
+app's own renderer fills an output: a rodio mixer, a kira renderer, or a
+decoder of its own. An input hands what it captures to the app's capturer.
 
 Spotifast found that rodio's output stream keeps the device asking for
 sound until it is dropped, so a paused player still ran the audio callback
@@ -88,6 +88,47 @@ streams, the monitors of outputs among the inputs, and ALSA's `null`
 device. On PipeWire the default is found through its PulseAudio server; a
 system without one marks no device the default. `output_device_names()`
 still returns every name cpal lists, as before.
+
+## Capturing
+
+`Input` is an `Output` the other way round, opened with `InputOptions` and
+a `Capture`:
+
+```rust
+use fastframe_audio::{Capture, Input, InputOptions};
+
+struct Meter { /* the app's ring buffer or channel */ }
+
+impl Capture for Meter {
+    fn configure(&mut self, sample_rate: u32, channels: u16) {
+        // Before the first capture, and again after any reopen.
+    }
+    fn capture(&mut self, input: &[f32]) {
+        // Interleaved, as f32 whatever the device captures. Must not block.
+    }
+}
+
+let mut input = Input::open(InputOptions::default(), Meter { /* .. */ })?;
+input.pause();  // no callbacks, the device stays open
+input.resume();
+let _ = input.maintain(); // now and then, as for an output
+```
+
+It opens, falls back, pauses, reopens, follows the default input and
+classifies errors as an output does, with the same real-time callback
+thread on the same devices. `InputOptions` has `device` (an id from
+`input_devices()`), `channels` (`0`, the default, takes the device's own),
+`sample_rate`, `buffer` (on PulseAudio `Buffer::Driver` asks for 20 ms, as
+for an output) and `follow_default`. A paused input keeps its device open,
+and is never let go after a pause; drop it to let the device go. Opening it
+may make the system ask the user for the microphone.
+
+Its `Clock` counts what was handed to the capturer, `latency()` is how long
+before the callback the device captured it, and `underruns()` counts the
+blocks the device captured later than where the one before ended, which
+lost what came in between (overruns). On PulseAudio cpal estimates those
+times from the wall clock, so a callback that came late without losing
+anything can count there.
 
 ## The feeding thread
 
@@ -235,9 +276,16 @@ first callback follows `resume()`. `-- --buffer-ms 100` asks for a fixed
 100 ms buffer instead of Solco's 512 frames. A paused output got no calls on
 ALSA, PulseAudio, PipeWire and WASAPI alike.
 
+`cargo run -p fastframe-audio --example capture` opens the default input,
+measures what it captures (how many samples, the loudest) and drops it,
+capturing, paused and resumed. Nothing is saved or sent. `--example devices`
+lists the outputs and inputs with their ids, and `-- --device <id>` opens
+one in `idle` or `capture`.
+
 ## Not in this crate
 
 Decoding, resampling, mixing, fades and visualiser taps belong to the
-renderer, where rodio and kira already do them. Recording, and pausing other
-media players while playing, stay in the app that needs them until a second
+renderer, where rodio and kira already do them, and what is done with
+captured sound (encoding, saving, sending it) to the capturer. Pausing other
+media players while playing stays in the app that needs it until a second
 app does.

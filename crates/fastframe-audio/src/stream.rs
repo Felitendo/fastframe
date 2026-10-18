@@ -1,5 +1,6 @@
 //! The thin layer that talks to cpal: choosing the device, opening the
-//! stream in the device's sample format, and watching the default output.
+//! stream in the device's sample format, and watching the default device,
+//! the same way for an output and an input.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
@@ -7,8 +8,34 @@ use std::time::Duration;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 
-use crate::plan::{self, Attempt, Choice, Direction};
-use crate::{Clock, Device, DeviceId, DeviceInfo, OpenError, OutputError, OutputOptions, Render};
+use crate::plan::{self, Choice, Direction};
+use crate::{Buffer, Capture, Clock, Device, DeviceId, DeviceInfo, OpenError, OutputError, Render};
+
+/// Calls `$build::<T, $engine>(args)` with `T` the Rust type of the sample
+/// format: every format cpal has.
+macro_rules! by_format {
+    ($format:expr, $build:ident, $engine:ident, $args:expr) => {{
+        use cpal::SampleFormat as F;
+        match $format {
+            F::F32 => $build::<f32, $engine>($args),
+            F::F64 => $build::<f64, $engine>($args),
+            F::I8 => $build::<i8, $engine>($args),
+            F::I16 => $build::<i16, $engine>($args),
+            F::I24 => $build::<cpal::I24, $engine>($args),
+            F::I32 => $build::<i32, $engine>($args),
+            F::I64 => $build::<i64, $engine>($args),
+            F::U8 => $build::<u8, $engine>($args),
+            F::U16 => $build::<u16, $engine>($args),
+            F::U24 => $build::<cpal::U24, $engine>($args),
+            F::U32 => $build::<u32, $engine>($args),
+            F::U64 => $build::<u64, $engine>($args),
+            other => Err(cpal::Error::with_message(
+                cpal::ErrorKind::UnsupportedConfig,
+                format!("unsupported sample format {other}"),
+            )),
+        }
+    }};
+}
 
 /// The audio system this process chose, the first time it asked.
 ///
@@ -47,9 +74,12 @@ pub(crate) fn host_name() -> &'static str {
     }
 }
 
-/// What the callback and the error callback share with the [`Output`](crate::Output).
-#[derive(Debug, Default)]
+/// What the callback and the error callback share with the
+/// [`Output`](crate::Output) or [`Input`](crate::Input).
+#[derive(Debug)]
 pub(crate) struct Shared {
+    /// Which way the stream goes, for the log.
+    direction: Direction,
     /// A stream error means the stream has to be opened again.
     pub(crate) failed: AtomicBool,
     /// Errors not yet taken by the app.
@@ -60,14 +90,24 @@ pub(crate) struct Shared {
 }
 
 impl Shared {
+    pub(crate) fn new(direction: Direction) -> Self {
+        Self {
+            direction,
+            failed: AtomicBool::new(false),
+            errors: Mutex::new(Vec::new()),
+            epoch: std::sync::atomic::AtomicU64::new(0),
+        }
+    }
+
     pub(crate) fn report(&self, error: cpal::Error) {
         let reopen = plan::needs_reopen(error.kind());
         let error = OutputError::from_cpal(&error);
+        let direction = self.direction.label();
         if reopen {
-            log::warn!("audio output error, reopening: {error}");
+            log::warn!("audio {direction} error, reopening: {error}");
             self.failed.store(true, Ordering::Release);
         } else {
-            log::debug!("audio output: {error}");
+            log::debug!("audio {direction}: {error}");
         }
         self.errors
             .lock()
@@ -88,70 +128,151 @@ pub(crate) struct Live {
     pub(crate) default_at_open: Option<String>,
 }
 
-/// The buffer asked of PulseAudio when the app wants the driver's own: about
-/// a PipeWire quantum.
-const PULSEAUDIO_DRIVER_BUFFER: crate::BufferSize =
-    crate::BufferSize::Duration(std::time::Duration::from_millis(20));
+/// How a stream is opened, from [`OutputOptions`](crate::OutputOptions) or
+/// [`InputOptions`](crate::InputOptions).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Settings {
+    pub(crate) device: Device,
+    /// `0` takes the device's own.
+    pub(crate) channels: u16,
+    pub(crate) sample_rate: Option<u32>,
+    pub(crate) buffer: Buffer,
+    pub(crate) max_block_frames: Option<u32>,
+    pub(crate) follow_default: bool,
+    pub(crate) release_after: Option<std::time::Duration>,
+}
 
-/// Opens the stream the options ask for and starts it, unless `paused`.
-pub(crate) fn open<R: Render>(
-    options: &OutputOptions,
-    renderer: &Arc<Mutex<R>>,
+/// What a stream's callback drives: the app's renderer for an output, its
+/// capturer for an input.
+pub(crate) trait Engine: Send + Sized + 'static {
+    /// Which way the stream goes.
+    const DIRECTION: Direction;
+
+    /// Told the stream's format before it starts.
+    fn configure(&mut self, sample_rate: u32, channels: u16);
+
+    /// Builds a stream on `device` that drives `engine`, in `format`.
+    fn build(
+        device: &cpal::Device,
+        config: &cpal::StreamConfig,
+        format: cpal::SampleFormat,
+        engine: Arc<Mutex<Self>>,
+        callback: Callback,
+    ) -> Result<cpal::Stream, cpal::Error>;
+}
+
+/// What the callback keeps besides the engine.
+pub(crate) struct Callback {
+    pub(crate) clock: Clock,
+    pub(crate) shared: Arc<Shared>,
+    pub(crate) max_block_frames: Option<u32>,
+}
+
+/// An output's engine: the app's renderer.
+pub(crate) struct Rendering<R>(pub(crate) R);
+
+impl<R: Render> Engine for Rendering<R> {
+    const DIRECTION: Direction = Direction::Output;
+
+    fn configure(&mut self, sample_rate: u32, channels: u16) {
+        self.0.configure(sample_rate, channels);
+    }
+
+    fn build(
+        device: &cpal::Device,
+        config: &cpal::StreamConfig,
+        format: cpal::SampleFormat,
+        engine: Arc<Mutex<Self>>,
+        callback: Callback,
+    ) -> Result<cpal::Stream, cpal::Error> {
+        by_format!(format, play, R, (device, config, engine, callback))
+    }
+}
+
+/// An input's engine: the app's capturer.
+pub(crate) struct Capturing<C>(pub(crate) C);
+
+impl<C: Capture> Engine for Capturing<C> {
+    const DIRECTION: Direction = Direction::Input;
+
+    fn configure(&mut self, sample_rate: u32, channels: u16) {
+        self.0.configure(sample_rate, channels);
+    }
+
+    fn build(
+        device: &cpal::Device,
+        config: &cpal::StreamConfig,
+        format: cpal::SampleFormat,
+        engine: Arc<Mutex<Self>>,
+        callback: Callback,
+    ) -> Result<cpal::Stream, cpal::Error> {
+        by_format!(format, record, C, (device, config, engine, callback))
+    }
+}
+
+/// Opens the stream the settings ask for, in the engine's direction, and
+/// starts it, unless `paused`.
+pub(crate) fn open<E: Engine>(
+    options: &Settings,
+    engine: &Arc<Mutex<E>>,
     clock: &Clock,
     shared: &Arc<Shared>,
     paused: bool,
 ) -> Result<Live, OpenError> {
+    let direction = E::DIRECTION;
+    let label = direction.label();
     let host = host();
-    let (device, default_at_open) = pick(&host, &options.device, Direction::Output)?;
+    let (device, default_at_open) = pick(&host, &options.device, direction)?;
     let name = device_name(&device).map_err(OpenError::from)?;
-    let id = reported_id(&host, &device, Direction::Output);
-    let default = device.default_output_config().map_err(OpenError::from)?;
-    let format = default.sample_format();
+    let id = reported_id(&host, &device, direction);
+    let default = match direction {
+        Direction::Output => device.default_output_config(),
+        Direction::Input => device.default_input_config(),
+    }
+    .map_err(OpenError::from)?;
     let range = match *default.buffer_size() {
         cpal::SupportedBufferSize::Range { min, max } => Some((min, max)),
         cpal::SupportedBufferSize::Unknown => None,
     };
-    let buffer = match options.buffer {
-        crate::Buffer::Driver => None,
-        crate::Buffer::Fixed(size) => Some(size),
-        crate::Buffer::FixedOnWindows(size) => cfg!(windows).then_some(size),
-    };
-    // PulseAudio's own target is about two seconds, which no app means by
-    // the driver's buffer; ask it for what PipeWire would give instead.
-    let buffer = buffer
-        .or_else(|| (host.id().to_string() == "pulseaudio").then_some(PULSEAUDIO_DRIVER_BUFFER));
-    let channels = if options.channels == 0 {
-        default.channels()
-    } else {
-        options.channels
-    };
-
-    let mut tried = plan::attempts(options.sample_rate, default.sample_rate(), buffer, range)
-        .into_iter()
-        .map(|attempt| (attempt, channels, format))
-        .collect::<Vec<_>>();
-    // Then anything else the device lists, with the driver's buffer.
-    if let Ok(configs) = device.supported_output_configs() {
-        for config in configs {
-            let rate = default
-                .sample_rate()
-                .clamp(config.min_sample_rate(), config.max_sample_rate());
-            let candidate = (
-                Attempt {
-                    sample_rate: rate,
-                    buffer_frames: None,
-                },
-                config.channels(),
-                config.sample_format(),
-            );
-            if !tried.contains(&candidate) {
-                tried.push(candidate);
-            }
-        }
+    let offered: Vec<plan::Offered> = match direction {
+        Direction::Output => device
+            .supported_output_configs()
+            .map(Iterator::collect::<Vec<_>>)
+            .unwrap_or_default(),
+        Direction::Input => device
+            .supported_input_configs()
+            .map(Iterator::collect::<Vec<_>>)
+            .unwrap_or_default(),
     }
+    .into_iter()
+    .map(|config: cpal::SupportedStreamConfigRange| plan::Offered {
+        rates: (config.min_sample_rate(), config.max_sample_rate()),
+        channels: config.channels(),
+        format: config.sample_format(),
+    })
+    .collect();
+    let tried = plan::candidates(
+        &plan::Wanted {
+            sample_rate: options.sample_rate,
+            channels: options.channels,
+            buffer: plan::buffer_for(options.buffer, &host.id().to_string(), cfg!(windows)),
+        },
+        &plan::Offered {
+            rates: (default.sample_rate(), default.sample_rate()),
+            channels: default.channels(),
+            format: default.sample_format(),
+        },
+        range,
+        &offered,
+    );
 
     let mut last_error = None;
-    for (attempt, channels, format) in tried {
+    for plan::Candidate {
+        attempt,
+        channels,
+        format,
+    } in tried
+    {
         let config = cpal::StreamConfig {
             channels,
             sample_rate: attempt.sample_rate,
@@ -159,19 +280,16 @@ pub(crate) fn open<R: Render>(
                 .buffer_frames
                 .map_or(cpal::BufferSize::Default, cpal::BufferSize::Fixed),
         };
-        renderer
+        engine
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .configure(attempt.sample_rate, channels);
-        match build(
-            &device,
-            &config,
-            format,
-            Arc::clone(renderer),
-            clock.clone(),
-            Arc::clone(shared),
-            options.max_block_frames,
-        ) {
+        let callback = Callback {
+            clock: clock.clone(),
+            shared: Arc::clone(shared),
+            max_block_frames: options.max_block_frames,
+        };
+        match E::build(&device, &config, format, Arc::clone(engine), callback) {
             Ok(stream) => {
                 clock.restart(attempt.sample_rate);
                 shared.failed.store(false, Ordering::Release);
@@ -179,7 +297,7 @@ pub(crate) fn open<R: Render>(
                     stream.play().map_err(OpenError::from)?;
                 }
                 log::info!(
-                    "audio output: {name} at {} Hz, {channels} channels, {}, through {}",
+                    "audio {label}: {name} at {} Hz, {channels} channels, {}, through {}",
                     attempt.sample_rate,
                     attempt
                         .buffer_frames
@@ -198,7 +316,7 @@ pub(crate) fn open<R: Render>(
                 });
             }
             Err(error) => {
-                log::debug!("audio output: {name} refused {config:?} as {format}: {error}");
+                log::debug!("audio {label}: {name} refused {config:?} as {format}: {error}");
                 last_error = Some(error);
             }
         }
@@ -373,72 +491,63 @@ fn device_name(device: &cpal::Device) -> Result<String, cpal::Error> {
     Ok(device.description()?.name().to_owned())
 }
 
-/// Builds a stream that renders through `renderer` in the device's sample
-/// format.
-fn build<R: Render>(
-    device: &cpal::Device,
-    config: &cpal::StreamConfig,
-    format: cpal::SampleFormat,
-    renderer: Arc<Mutex<R>>,
-    clock: Clock,
-    shared: Arc<Shared>,
-    max_block_frames: Option<u32>,
-) -> Result<cpal::Stream, cpal::Error> {
-    use cpal::SampleFormat as F;
-    let args = (device, config, renderer, clock, shared, max_block_frames);
-    match format {
-        F::F32 => typed::<f32, R>(args),
-        F::F64 => typed::<f64, R>(args),
-        F::I8 => typed::<i8, R>(args),
-        F::I16 => typed::<i16, R>(args),
-        F::I24 => typed::<cpal::I24, R>(args),
-        F::I32 => typed::<i32, R>(args),
-        F::I64 => typed::<i64, R>(args),
-        F::U8 => typed::<u8, R>(args),
-        F::U16 => typed::<u16, R>(args),
-        F::U24 => typed::<cpal::U24, R>(args),
-        F::U32 => typed::<u32, R>(args),
-        F::U64 => typed::<u64, R>(args),
-        other => Err(cpal::Error::with_message(
-            cpal::ErrorKind::UnsupportedConfig,
-            format!("unsupported sample format {other}"),
-        )),
+type BuildArgs<'a, E> = (
+    &'a cpal::Device,
+    &'a cpal::StreamConfig,
+    Arc<Mutex<E>>,
+    Callback,
+);
+
+/// What every callback does first on its thread: join MMCSS on Windows, and
+/// on Linux hand the thread to the real-time helper and watch it spin.
+struct Thread {
+    #[cfg(target_os = "linux")]
+    promoter: crate::realtime::Promoter,
+}
+
+impl Thread {
+    #[cfg_attr(not(target_os = "linux"), allow(unused_variables))]
+    fn new(device: &cpal::Device, direction: Direction) -> Self {
+        Self {
+            #[cfg(target_os = "linux")]
+            promoter: {
+                let realtime = Realtime::of(device);
+                crate::realtime::Promoter::start(realtime.eligible, &realtime.device, direction)
+            },
+        }
+    }
+
+    fn on_callback(&mut self) {
+        #[cfg(target_os = "windows")]
+        crate::mmcss::join_once();
+        #[cfg(target_os = "linux")]
+        self.promoter.on_callback();
     }
 }
 
-type BuildArgs<'a, R> = (
-    &'a cpal::Device,
-    &'a cpal::StreamConfig,
-    Arc<Mutex<R>>,
-    Clock,
-    Arc<Shared>,
-    Option<u32>,
-);
-
-fn typed<T, R>(
-    (device, config, renderer, clock, shared, max_block): BuildArgs<'_, R>,
+/// An output stream that renders through the app's renderer in `T`.
+fn play<T, R>(
+    (device, config, renderer, callback): BuildArgs<'_, Rendering<R>>,
 ) -> Result<cpal::Stream, cpal::Error>
 where
     T: cpal::SizedSample + cpal::FromSample<f32>,
     R: Render,
 {
+    let Callback {
+        clock,
+        shared,
+        max_block_frames: max_block,
+    } = callback;
     let channels = usize::from(config.channels);
     let rate = config.sample_rate;
     let mut scratch: Vec<f32> = Vec::new();
     let errors = Arc::clone(&shared);
     let mut timeline = plan::Timeline::default();
-    #[cfg(target_os = "linux")]
-    let mut promoter = {
-        let realtime = Realtime::of(device);
-        crate::realtime::Promoter::start(realtime.eligible, &realtime.device)
-    };
+    let mut thread = Thread::new(device, Direction::Output);
     device.build_output_stream::<T, _, _>(
         *config,
         move |data: &mut [T], info: &cpal::OutputCallbackInfo| {
-            #[cfg(target_os = "windows")]
-            crate::mmcss::join_once();
-            #[cfg(target_os = "linux")]
-            promoter.on_callback();
+            thread.on_callback();
             scratch.clear();
             scratch.resize(data.len(), 0.0);
             // The app's thread only takes the lock while (re)opening, before
@@ -447,14 +556,14 @@ where
             let rendered = match renderer.try_lock() {
                 Ok(mut renderer) => {
                     for (start, end) in plan::blocks(scratch.len(), channels, max_block) {
-                        renderer.render(&mut scratch[start..end]);
+                        renderer.0.render(&mut scratch[start..end]);
                     }
                     true
                 }
                 Err(std::sync::TryLockError::Poisoned(poisoned)) => {
                     let mut renderer = poisoned.into_inner();
                     for (start, end) in plan::blocks(scratch.len(), channels, max_block) {
-                        renderer.render(&mut scratch[start..end]);
+                        renderer.0.render(&mut scratch[start..end]);
                     }
                     true
                 }
@@ -481,6 +590,60 @@ where
                 clock.underran();
             }
             clock.rendered(frames, latency);
+        },
+        move |error| errors.report(error),
+        None,
+    )
+}
+
+/// An input stream that hands what the device captured, in `T`, to the
+/// app's capturer as `f32`.
+fn record<T, C>(
+    (device, config, capturer, callback): BuildArgs<'_, Capturing<C>>,
+) -> Result<cpal::Stream, cpal::Error>
+where
+    T: cpal::SizedSample,
+    f32: cpal::FromSample<T>,
+    C: Capture,
+{
+    let Callback { clock, shared, .. } = callback;
+    let channels = usize::from(config.channels);
+    let rate = config.sample_rate;
+    let mut scratch: Vec<f32> = Vec::new();
+    let errors = Arc::clone(&shared);
+    let mut timeline = plan::Timeline::default();
+    let mut thread = Thread::new(device, Direction::Input);
+    device.build_input_stream::<T, _, _>(
+        *config,
+        move |data: &[T], info: &cpal::InputCallbackInfo| {
+            thread.on_callback();
+            scratch.clear();
+            scratch.extend(data.iter().map(|sample| sample.to_sample::<f32>()));
+            // As for an output: a contended lock drops this block rather
+            // than wait.
+            match capturer.try_lock() {
+                Ok(mut capturer) => capturer.0.capture(&scratch),
+                Err(std::sync::TryLockError::Poisoned(poisoned)) => {
+                    poisoned.into_inner().0.capture(&scratch);
+                }
+                Err(std::sync::TryLockError::WouldBlock) => {}
+            }
+            let timestamp = info.timestamp();
+            let latency = timestamp
+                .callback
+                .saturating_duration_since(timestamp.capture);
+            let frames = (data.len() / channels.max(1)) as u64;
+            // A block captured later than where the one before it ends lost
+            // what came in between: an overrun.
+            if timeline.observe(
+                shared.epoch.load(Ordering::Relaxed),
+                timestamp.capture.as_nanos(),
+                frames,
+                rate,
+            ) {
+                clock.underran();
+            }
+            clock.captured(frames, latency);
         },
         move |error| errors.report(error),
         None,

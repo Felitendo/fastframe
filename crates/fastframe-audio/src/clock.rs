@@ -1,16 +1,18 @@
-//! How long an output has played, shared between the audio callback (which
-//! counts frames) and any thread that asks.
+//! How long an output has played or an input has captured, shared between
+//! the audio callback (which counts frames) and any thread that asks.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::time::Duration;
 
-/// How long an [`Output`](crate::Output) has played, readable from any thread
-/// without blocking the audio callback.
+/// How long an [`Output`](crate::Output) has played, or an
+/// [`Input`](crate::Input) has captured, readable from any thread without
+/// blocking the audio callback.
 ///
-/// [`played`](Self::played) counts what has reached the device, not what was
-/// handed to the renderer: it subtracts the output latency the device
-/// reports. It never goes backwards, stands still while the output is paused,
+/// For an output, [`played`](Self::played) counts what has reached the
+/// device, not what was handed to the renderer: it subtracts the output
+/// latency the device reports. For an input it counts what was handed to the
+/// capturer. It never goes backwards, stands still while the output is paused,
 /// and carries on across reopens (another device, another sample rate)
 /// without jumping or starting again from zero. Take differences between two
 /// readings to follow a clip.
@@ -31,26 +33,35 @@ struct Shared {
     last: AtomicU64,
     /// Gaps the device played because a callback came too late.
     underruns: AtomicU64,
+    /// An input's clock: what was handed over has been captured already, so
+    /// the latency is not subtracted.
+    capturing: AtomicBool,
 }
 
 impl Clock {
-    /// How long the output has played.
+    /// How long the output has played, or the input has captured.
     #[must_use]
     pub fn played(&self) -> Duration {
         let shared = &self.0;
+        let latency = if shared.capturing.load(Ordering::Relaxed) {
+            0
+        } else {
+            shared.latency.load(Ordering::Acquire)
+        };
         let now = played_nanos(
             shared.base.load(Ordering::Acquire),
             shared.frames.load(Ordering::Acquire),
             shared.rate.load(Ordering::Acquire),
-            shared.latency.load(Ordering::Acquire),
+            latency,
         );
         let previous = shared.last.fetch_max(now, Ordering::AcqRel);
         Duration::from_nanos(now.max(previous))
     }
 
-    /// The time between rendering a sample and the device playing it, as the
-    /// device last reported it. Zero before the first callback, or where the
-    /// backend does not say.
+    /// For an output, the time between rendering a sample and the device
+    /// playing it; for an input, between the device capturing a sample and
+    /// the capturer getting it. As the device last reported it. Zero before
+    /// the first callback, or where the backend does not say.
     #[must_use]
     pub fn latency(&self) -> Duration {
         Duration::from_nanos(self.0.latency.load(Ordering::Acquire))
@@ -58,8 +69,10 @@ impl Clock {
 
     /// How many times the device played silence because the callback came
     /// too late (an underrun), by the device's own timeline of when each
-    /// block plays, across pauses and reopens. A pause is not one. Backends
-    /// that give no playback times count none.
+    /// block plays, across pauses and reopens. For an input, how many times
+    /// it lost what it captured because the callback came too late (an
+    /// overrun), by when each block was captured. A pause is not one.
+    /// Backends that give no timestamps count none.
     #[must_use]
     pub fn underruns(&self) -> u64 {
         self.0.underruns.load(Ordering::Relaxed)
@@ -76,6 +89,13 @@ impl Clock {
         let latency = u64::try_from(latency.as_nanos()).unwrap_or(u64::MAX);
         self.0.latency.store(latency, Ordering::Release);
         self.0.frames.fetch_add(frames, Ordering::AcqRel);
+    }
+
+    /// The callback handed `frames` more captured frames to the capturer,
+    /// which the device captured `latency` before the callback.
+    pub(crate) fn captured(&self, frames: u64, latency: Duration) {
+        self.0.capturing.store(true, Ordering::Relaxed);
+        self.rendered(frames, latency);
     }
 
     /// A new stream starts at `rate`: what has played so far becomes the
@@ -126,6 +146,16 @@ mod tests {
         assert_eq!(clock.played(), Duration::from_secs(1));
         clock.rendered(24_000, Duration::ZERO);
         assert_eq!(clock.played(), Duration::from_millis(1500));
+    }
+
+    #[test]
+    fn an_inputs_clock_counts_what_was_captured() {
+        let clock = Clock::default();
+        clock.restart(48_000);
+        clock.captured(48_000, Duration::from_millis(5));
+        // Already captured: the delay is not taken off.
+        assert_eq!(clock.played(), Duration::from_secs(1));
+        assert_eq!(clock.latency(), Duration::from_millis(5));
     }
 
     #[test]

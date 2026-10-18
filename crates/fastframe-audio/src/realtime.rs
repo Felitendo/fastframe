@@ -45,6 +45,8 @@ const NICE: i32 = -11;
 /// at a raised priority.
 pub(crate) struct Promoter {
     sender: Option<SyncSender<libc::pid_t>>,
+    /// "output" or "input", for the log.
+    label: &'static str,
     /// Set once the thread was seen spinning: the helper must not promote it.
     spinning: Arc<AtomicBool>,
     window: plan::SpinWindow,
@@ -54,10 +56,12 @@ impl Promoter {
     /// For a stream on a device that waits for the hardware, starts the
     /// helper, which waits for the callback's first call and ends with the
     /// stream if that never comes. For any other, only the spin guard.
-    pub(crate) fn start(eligible: bool, device: &str) -> Self {
+    pub(crate) fn start(eligible: bool, device: &str, direction: plan::Direction) -> Self {
+        let label = direction.label();
         let spinning = Arc::new(AtomicBool::new(false));
         let mut promoter = Self {
             sender: None,
+            label,
             spinning: Arc::clone(&spinning),
             window: plan::SpinWindow::default(),
         };
@@ -65,7 +69,7 @@ impl Promoter {
             static REPORTED: AtomicBool = AtomicBool::new(false);
             if !REPORTED.swap(true, Ordering::Relaxed) {
                 log::info!(
-                    "audio output: callback thread keeps ordinary priority: {device} may not wait \
+                    "audio {label}: callback thread keeps ordinary priority: {device} may not wait \
                      for the hardware"
                 );
             }
@@ -74,11 +78,11 @@ impl Promoter {
         let (sender, receiver) = sync_channel(1);
         let started = std::thread::Builder::new()
             .name("audio-realtime".into())
-            .spawn(move || promote_from(&receiver, &spinning));
+            .spawn(move || promote_from(&receiver, &spinning, label));
         match started {
             Ok(_) => promoter.sender = Some(sender),
             Err(error) => {
-                log::debug!("audio output: cannot start the real-time helper: {error}");
+                log::debug!("audio {label}: cannot start the real-time helper: {error}");
             }
         }
         promoter
@@ -101,8 +105,9 @@ impl Promoter {
                 static REPORTED: AtomicBool = AtomicBool::new(false);
                 if !REPORTED.swap(true, Ordering::Relaxed) {
                     log::warn!(
-                        "audio output: the callback thread never waits for this device; it \
-                         keeps ordinary priority"
+                        "audio {}: the callback thread never waits for this device; it \
+                         keeps ordinary priority",
+                        self.label
                     );
                 }
             }
@@ -110,7 +115,7 @@ impl Promoter {
     }
 }
 
-fn promote_from(receiver: &Receiver<libc::pid_t>, spinning: &AtomicBool) {
+fn promote_from(receiver: &Receiver<libc::pid_t>, spinning: &AtomicBool, label: &str) {
     let Ok(thread) = receiver.recv() else {
         return;
     };
@@ -123,17 +128,17 @@ fn promote_from(receiver: &Receiver<libc::pid_t>, spinning: &AtomicBool) {
     match outcome {
         Ok(Promoted::RealTime(priority)) => {
             if first {
-                log::info!("audio output: callback thread real-time at priority {priority}");
+                log::info!("audio {label}: callback thread real-time at priority {priority}");
             }
         }
         Ok(Promoted::Nice(nice)) => {
             if first {
-                log::info!("audio output: callback thread not real-time; raised to nice {nice}");
+                log::info!("audio {label}: callback thread not real-time; raised to nice {nice}");
             }
         }
         Err(error) => {
             if first {
-                log::info!("audio output: callback thread keeps ordinary priority: {error}");
+                log::info!("audio {label}: callback thread keeps ordinary priority: {error}");
             }
         }
     }
@@ -314,7 +319,7 @@ mod tests {
     #[test]
     fn a_stream_that_never_calls_back_lets_its_helper_go() {
         // The helper waits on the channel; dropping the promoter ends it.
-        let promoter = Promoter::start(true, "hw:CARD=PCH,DEV=0");
+        let promoter = Promoter::start(true, "hw:CARD=PCH,DEV=0", plan::Direction::Output);
         drop(promoter);
     }
 
@@ -325,7 +330,7 @@ mod tests {
     #[test]
     fn a_callback_that_never_waits_is_not_made_real_time() {
         std::thread::spawn(|| {
-            let mut promoter = Promoter::start(false, "null");
+            let mut promoter = Promoter::start(false, "null", plan::Direction::Input);
             assert!(
                 promoter.sender.is_none(),
                 "no helper for a device that may spin"

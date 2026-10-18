@@ -1,6 +1,8 @@
-//! Audio output for egui apps: one device stream that costs nothing while
-//! paused, follows the default output, and reopens after a failure, with the
-//! app's own renderer (a rodio mixer, a kira renderer, a decoder) filling it.
+//! Audio output and input for egui apps: one device stream that costs nothing
+//! while paused, follows the default device, and reopens after a failure,
+//! with the app's own renderer (a rodio mixer, a kira renderer, a decoder)
+//! filling an [`Output`], and the app's [`Capture`] taking what an [`Input`]
+//! records.
 //!
 //! ```no_run
 //! use fastframe_audio::{Output, OutputOptions, Render};
@@ -58,17 +60,17 @@ mod mmcss;
 mod plan;
 #[cfg(target_os = "linux")]
 mod realtime;
+mod session;
 mod stream;
 
 use std::fmt;
-use std::sync::atomic::Ordering;
-use std::sync::{Arc, Mutex, PoisonError};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 pub use clock::Clock;
 pub use feeder::raise_feeder_priority;
 
-use stream::{DefaultWatch, Live, Shared};
+use session::Session;
+use stream::{Capturing, Rendering, Settings};
 
 /// What fills the output with sound. It runs on the audio thread.
 ///
@@ -88,6 +90,26 @@ pub trait Render: Send + 'static {
     /// [`configure`](Self::configure). Write silence (zeros) when there is
     /// nothing to play. Must not block.
     fn render(&mut self, out: &mut [f32]);
+}
+
+/// What takes the sound an [`Input`] captures. It runs on the audio thread.
+///
+/// The input keeps the same capturer across pauses and reopens. As with a
+/// [`Render`], the app reaches what it captured through its own handles (a
+/// ring buffer, a channel), never through the input, so nothing the app does
+/// can make the callback wait.
+pub trait Capture: Send + 'static {
+    /// The stream's sample rate and channel count. Called before the first
+    /// [`capture`](Self::capture), and again whenever the input opens a
+    /// stream, which can be at another rate or channel count after a reopen.
+    /// It may be called more than once while a stream is being opened; the
+    /// last call is the one that holds.
+    fn configure(&mut self, sample_rate: u32, channels: u16);
+
+    /// Takes interleaved samples, in the channel count from
+    /// [`configure`](Self::configure), converted to `f32` from whatever the
+    /// device captures. Must not block.
+    fn capture(&mut self, input: &[f32]);
 }
 
 /// A device's own id, to save in settings and open the same device again
@@ -225,20 +247,78 @@ impl Default for OutputOptions {
     }
 }
 
+impl OutputOptions {
+    fn settings(&self) -> Settings {
+        Settings {
+            device: self.device.clone(),
+            channels: self.channels,
+            sample_rate: self.sample_rate,
+            buffer: self.buffer,
+            max_block_frames: self.max_block_frames,
+            follow_default: self.follow_default,
+            release_after: self.release_after,
+        }
+    }
+}
+
+/// How to open an [`Input`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InputOptions {
+    /// The device, an id from [`input_devices`] or its name.
+    pub device: Device,
+    /// Channels to ask for; `0`, the default, takes the device's own.
+    pub channels: u16,
+    /// A sample rate to try first; `None` takes the device's default rate.
+    pub sample_rate: Option<u32>,
+    /// The device's buffer, as for an output: on PulseAudio, whose own
+    /// target is about two seconds, [`Buffer::Driver`] asks for 20 ms.
+    pub buffer: Buffer,
+    /// With [`Device::Default`], move to the new default input when it
+    /// changes (checked every two seconds on macOS and Windows; PipeWire and
+    /// PulseAudio move the stream themselves).
+    pub follow_default: bool,
+}
+
+impl Default for InputOptions {
+    fn default() -> Self {
+        Self {
+            device: Device::Default,
+            channels: 0,
+            sample_rate: None,
+            buffer: Buffer::Driver,
+            follow_default: true,
+        }
+    }
+}
+
+impl InputOptions {
+    fn settings(&self) -> Settings {
+        Settings {
+            device: self.device.clone(),
+            channels: self.channels,
+            sample_rate: self.sample_rate,
+            buffer: self.buffer,
+            max_block_frames: None,
+            follow_default: self.follow_default,
+            release_after: None,
+        }
+    }
+}
+
 /// How the app should treat an [`OutputError`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ErrorKind {
-    /// What is playing cannot carry on: the audio system is missing, access
-    /// was denied, a resource ran out, or the configuration or operation is
-    /// not supported. The output still reopens.
+    /// What is playing or recording cannot carry on: the audio system is
+    /// missing, access was denied, a resource ran out, or the configuration
+    /// or operation is not supported. The stream still reopens.
     Fatal,
-    /// Worth logging: a glitch, a busy or vanished device the output reopens,
+    /// Worth logging: a glitch, a busy or vanished device the stream reopens,
     /// a rerouted stream, refused real-time priority, or what the backend
     /// could not classify.
     Recoverable,
 }
 
-/// An error from the audio device.
+/// An error from the audio device, of an [`Output`] or an [`Input`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OutputError {
     kind: ErrorKind,
@@ -259,7 +339,7 @@ impl OutputError {
         self.kind
     }
 
-    /// Whether what is playing has to stop.
+    /// Whether what is playing or recording has to stop.
     #[must_use]
     pub fn is_fatal(&self) -> bool {
         self.kind == ErrorKind::Fatal
@@ -274,10 +354,11 @@ impl fmt::Display for OutputError {
 
 impl std::error::Error for OutputError {}
 
-/// Why an output could not be opened.
+/// Why an output or an input could not be opened.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum OpenError {
-    /// There is no output device.
+    /// There is no device that way: no output for an output, no input for an
+    /// input.
     NoDevice,
     /// The device refused.
     Device(OutputError),
@@ -292,36 +373,39 @@ impl From<cpal::Error> for OpenError {
 impl fmt::Display for OpenError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::NoDevice => f.write_str("There is no audio output device."),
-            Self::Device(error) => write!(f, "Cannot open the audio output: {error}"),
+            Self::NoDevice => f.write_str("There is no audio device."),
+            Self::Device(error) => write!(f, "Cannot open the audio device: {error}"),
         }
     }
 }
 
 impl std::error::Error for OpenError {}
 
-/// Why the output opened its stream again.
+/// Why the output or input opened its stream again.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Reason {
     /// The stream failed or its device went away.
     Failed,
-    /// The default output changed, and [`OutputOptions::follow_default`] is on.
+    /// The default device changed, and [`OutputOptions::follow_default`] or
+    /// [`InputOptions::follow_default`] is on.
     DefaultChanged,
-    /// [`Output::resume`] took back a device let go after a long pause.
+    /// [`Output::resume`] took back a device let go after a long pause, or
+    /// [`Input::resume`] one let go after it failed while paused.
     Resumed,
-    /// The stream stopped asking for sound while playing, without reporting
-    /// an error: the [`Clock`] stood still for two seconds.
+    /// The stream stopped asking for or delivering sound while running,
+    /// without reporting an error: the [`Clock`] stood still for two seconds.
     Stalled,
 }
 
-/// What [`Output::maintain`] did.
+/// What [`Output::maintain`] or [`Input::maintain`] did.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Maintained {
     /// Nothing changed.
     Unchanged,
     /// A new stream is playing, possibly on another device, at another rate
-    /// or with other channels; [`Render::configure`] has been told. The new
-    /// device's id is [`Output::device_id`] from now on.
+    /// or with other channels; [`Render::configure`] or
+    /// [`Capture::configure`] has been told. The new device's id is
+    /// [`Output::device_id`] or [`Input::device_id`] from now on.
     Reopened {
         /// The device's name.
         device: String,
@@ -337,7 +421,7 @@ pub enum Maintained {
     /// [`Output::resume`] opens it again.
     Released,
     /// The stream had to be opened again and could not be. Nothing is
-    /// playing; the next `maintain` or `resume` tries again.
+    /// playing or recording; the next `maintain` or `resume` tries again.
     Failed(OpenError),
 }
 
@@ -346,33 +430,12 @@ pub enum Maintained {
 /// Keep one for as long as the app may play. Pausing costs nothing, and
 /// [`maintain`](Self::maintain) keeps it on a working device.
 pub struct Output<R: Render> {
-    options: OutputOptions,
-    renderer: Arc<Mutex<R>>,
-    live: Option<Live>,
-    shared: Arc<Shared>,
-    clock: Clock,
-    paused: bool,
-    paused_at: Option<Instant>,
-    /// A reopen [`resume`](Self::resume) made, for the next `maintain` to report.
-    resumed: bool,
-    /// Whether the clock still moves while playing.
-    stall: plan::Stall,
-    watch: Option<DefaultWatch>,
-    device: String,
-    id: DeviceId,
-    sample_rate: u32,
-    channels: u16,
+    session: Session<Rendering<R>>,
 }
 
 impl<R: Render> fmt::Debug for Output<R> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Output")
-            .field("device", &self.device)
-            .field("sample_rate", &self.sample_rate)
-            .field("channels", &self.channels)
-            .field("paused", &self.paused)
-            .field("open", &self.live.is_some())
-            .finish_non_exhaustive()
+        self.session.fmt(f)
     }
 }
 
@@ -382,29 +445,8 @@ impl<R: Render> Output<R> {
     /// Asking the device can take a perceptible time, so call it off the UI
     /// thread. A failure is not remembered: the next `open` tries again.
     pub fn open(options: OutputOptions, renderer: R) -> Result<Self, OpenError> {
-        let renderer = Arc::new(Mutex::new(renderer));
-        let shared = Arc::new(Shared::default());
-        let clock = Clock::default();
-        let live = stream::open(&options, &renderer, &clock, &shared, false)?;
-        let watch = (options.follow_default
-            && options.device == Device::Default
-            && cfg!(any(target_os = "macos", windows)))
-        .then(|| DefaultWatch::start(live.default_at_open.clone(), plan::Direction::Output));
         Ok(Self {
-            device: live.device.clone(),
-            id: live.id.clone(),
-            sample_rate: live.sample_rate,
-            channels: live.channels,
-            options,
-            renderer,
-            live: Some(live),
-            shared,
-            clock,
-            paused: false,
-            paused_at: None,
-            resumed: false,
-            stall: plan::Stall::new(Duration::ZERO, Instant::now()),
-            watch,
+            session: Session::open(options.settings(), Rendering(renderer))?,
         })
     }
 
@@ -413,58 +455,27 @@ impl<R: Render> Output<R> {
     /// [`resume`](Self::resume). Never fails: a stream that cannot pause keeps
     /// running.
     pub fn pause(&mut self) {
-        if self.paused {
-            return;
-        }
-        self.paused = true;
-        self.paused_at = Some(Instant::now());
-        self.shared.epoch.fetch_add(1, Ordering::Relaxed);
-        if let Some(live) = &self.live {
-            use cpal::traits::StreamTrait;
-            if let Err(error) = live.stream.pause() {
-                log::warn!("cannot pause the audio output: {error}");
-                self.shared.report(error);
-            }
-        }
+        self.session.pause();
     }
 
     /// Has the device ask for sound again, opening it again if it was let go.
     /// Never fails: a device that will not start is reported by the next
     /// [`maintain`](Self::maintain), as is a reopen, with the new rate.
     pub fn resume(&mut self) {
-        if !self.paused {
-            return;
-        }
-        self.paused = false;
-        self.paused_at = None;
-        self.shared.epoch.fetch_add(1, Ordering::Relaxed);
-        match &self.live {
-            Some(live) => {
-                use cpal::traits::StreamTrait;
-                if let Err(error) = live.stream.play() {
-                    log::warn!("cannot restart the audio output: {error}");
-                    self.shared.report(error);
-                }
-            }
-            None => {
-                if self.reopen().is_ok() {
-                    self.resumed = true;
-                }
-            }
-        }
+        self.session.resume();
     }
 
     /// Whether the output is paused.
     #[must_use]
     pub fn is_paused(&self) -> bool {
-        self.paused
+        self.session.is_paused()
     }
 
     /// Whether the stream has failed or could not be opened again. Cheap
     /// enough to ask before every write; [`maintain`](Self::maintain) repairs it.
     #[must_use]
     pub fn failed(&self) -> bool {
-        self.shared.failed.load(Ordering::Acquire) || (self.live.is_none() && !self.paused)
+        self.session.failed()
     }
 
     /// Keeps the output on a working device. Call it now and then on the
@@ -477,71 +488,26 @@ impl<R: Render> Output<R> {
     /// happens between calls, so keep calling it while paused for
     /// [`OutputOptions::release_after`] to take effect.
     pub fn maintain(&mut self) -> Maintained {
-        if std::mem::take(&mut self.resumed) {
-            return self.reopened(Reason::Resumed);
-        }
-        if self.paused
-            && self.live.is_some()
-            && plan::should_release(self.paused_at, Instant::now(), self.options.release_after)
-        {
-            log::info!(
-                "audio output: letting {} go after a long pause",
-                self.device
-            );
-            self.live = None;
-            return Maintained::Released;
-        }
-        let reason = if self.shared.failed.load(Ordering::Acquire) {
-            Some(Reason::Failed)
-        } else if self.default_changed() {
-            Some(Reason::DefaultChanged)
-        } else if self.live.is_none() && !self.paused {
-            Some(Reason::Failed)
-        } else if self.stalled() {
-            log::warn!("audio output: {} stopped playing; reopening", self.device);
-            Some(Reason::Stalled)
-        } else {
-            None
-        };
-        let Some(reason) = reason else {
-            return Maintained::Unchanged;
-        };
-        if self.paused {
-            // Nothing is playing: let the device go, and open the right one
-            // on resume.
-            self.live = None;
-            self.shared.failed.store(false, Ordering::Release);
-            return Maintained::Released;
-        }
-        match self.reopen() {
-            Ok(()) => self.reopened(reason),
-            Err(error) => Maintained::Failed(error),
-        }
+        self.session.maintain()
     }
 
     /// The errors the device reported since the last call, fatal and
     /// recoverable alike. A fatal one is still reported when the output has
     /// already reopened.
     pub fn take_errors(&mut self) -> Vec<OutputError> {
-        std::mem::take(
-            &mut *self
-                .shared
-                .errors
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner),
-        )
+        self.session.take_errors()
     }
 
     /// How long the output has played, readable from any thread.
     #[must_use]
     pub fn clock(&self) -> Clock {
-        self.clock.clone()
+        self.session.clock()
     }
 
     /// The device's name.
     #[must_use]
     pub fn device_name(&self) -> &str {
-        &self.device
+        self.session.device_name()
     }
 
     /// The device's id, to save and open it again by ([`Device::Id`]).
@@ -552,77 +518,122 @@ impl<R: Render> Output<R> {
     /// cpal's own `output_default` without one.
     #[must_use]
     pub fn device_id(&self) -> &DeviceId {
-        &self.id
+        self.session.device_id()
     }
 
     /// The stream's sample rate.
     #[must_use]
     pub fn sample_rate(&self) -> u32 {
-        self.sample_rate
+        self.session.sample_rate()
     }
 
     /// The stream's channel count.
     #[must_use]
     pub fn channels(&self) -> u16 {
-        self.channels
+        self.session.channels()
+    }
+}
+
+/// An audio input: one stream from one device, into the app's capturer.
+///
+/// It works as an [`Output`] does, the other way: a paused input gets no
+/// callbacks, [`maintain`](Self::maintain) reopens a stream that failed or
+/// stalled and moves to a new default input, and its [`Clock`] counts what
+/// was captured. The callback runs with the same priority as an output's:
+/// real-time on Linux on devices that wait for the hardware, in MMCSS on
+/// Windows, on CoreAudio's I/O thread on macOS. A paused input keeps its
+/// device open; drop it to let the device go.
+///
+/// Opening it may make the system ask the user for the microphone (macOS
+/// asks once per app, Windows follows its privacy settings). Refused, the
+/// device captures silence or fails to open, as the system decides.
+pub struct Input<C: Capture> {
+    session: Session<Capturing<C>>,
+}
+
+impl<C: Capture> fmt::Debug for Input<C> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.session.fmt(f)
+    }
+}
+
+impl<C: Capture> Input<C> {
+    /// Opens the device and starts capturing into `capturer`.
+    ///
+    /// Asking the device can take a perceptible time, so call it off the UI
+    /// thread. A failure is not remembered: the next `open` tries again.
+    pub fn open(options: InputOptions, capturer: C) -> Result<Self, OpenError> {
+        Ok(Self {
+            session: Session::open(options.settings(), Capturing(capturer))?,
+        })
     }
 
-    fn default_changed(&self) -> bool {
-        let (Some(watch), Some(live)) = (&self.watch, &self.live) else {
-            return false;
-        };
-        match (watch.id(), &live.default_at_open) {
-            (Some(now), Some(then)) => &now != then,
-            _ => false,
-        }
+    /// Stops the device delivering sound, so the callback and the capturer
+    /// cost nothing, and keeps the device open for an instant
+    /// [`resume`](Self::resume). Never fails.
+    pub fn pause(&mut self) {
+        self.session.pause();
     }
 
-    /// Closes the stream, if any, and opens the one the options ask for.
-    fn reopen(&mut self) -> Result<(), OpenError> {
-        // Let the old device go first: some only take one stream.
-        self.live = None;
-        match stream::open(
-            &self.options,
-            &self.renderer,
-            &self.clock,
-            &self.shared,
-            self.paused,
-        ) {
-            Ok(live) => {
-                self.stall = plan::Stall::new(self.clock.played(), Instant::now());
-                self.device = live.device.clone();
-                self.id = live.id.clone();
-                self.sample_rate = live.sample_rate;
-                self.channels = live.channels;
-                self.live = Some(live);
-                Ok(())
-            }
-            Err(error) => {
-                log::warn!("audio output: {error}");
-                Err(error)
-            }
-        }
+    /// Has the device deliver sound again. Never fails: a device that will
+    /// not start is reported by the next [`maintain`](Self::maintain).
+    pub fn resume(&mut self) {
+        self.session.resume();
     }
 
-    /// Whether the output is playing but its clock has stood still for
-    /// [`plan::STALL`]. Paused, nothing is expected to move.
-    fn stalled(&mut self) -> bool {
-        let now = Instant::now();
-        let played = self.clock.played();
-        if self.paused || self.live.is_none() {
-            self.stall = plan::Stall::new(played, now);
-            return false;
-        }
-        self.stall.observe(played, now)
+    /// Whether the input is paused.
+    #[must_use]
+    pub fn is_paused(&self) -> bool {
+        self.session.is_paused()
     }
 
-    fn reopened(&self, reason: Reason) -> Maintained {
-        Maintained::Reopened {
-            device: self.device.clone(),
-            sample_rate: self.sample_rate,
-            channels: self.channels,
-            reason,
-        }
+    /// Whether the stream has failed or could not be opened again.
+    #[must_use]
+    pub fn failed(&self) -> bool {
+        self.session.failed()
+    }
+
+    /// Keeps the input on a working device, as [`Output::maintain`] does:
+    /// call it now and then on the thread that owns the input.
+    pub fn maintain(&mut self) -> Maintained {
+        self.session.maintain()
+    }
+
+    /// The errors the device reported since the last call, classified as an
+    /// output's are.
+    pub fn take_errors(&mut self) -> Vec<OutputError> {
+        self.session.take_errors()
+    }
+
+    /// How long the input has captured, readable from any thread.
+    #[must_use]
+    pub fn clock(&self) -> Clock {
+        self.session.clock()
+    }
+
+    /// The device's name.
+    #[must_use]
+    pub fn device_name(&self) -> &str {
+        self.session.device_name()
+    }
+
+    /// The device's id, to save and open it again by ([`Device::Id`]). On
+    /// PipeWire the default is reported as for [`Output::device_id`].
+    #[must_use]
+    pub fn device_id(&self) -> &DeviceId {
+        self.session.device_id()
+    }
+
+    /// The stream's sample rate.
+    #[must_use]
+    pub fn sample_rate(&self) -> u32 {
+        self.session.sample_rate()
+    }
+
+    /// The stream's channel count.
+    #[must_use]
+    pub fn channels(&self) -> u16 {
+        self.session.channels()
     }
 }
 

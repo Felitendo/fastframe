@@ -4,7 +4,7 @@
 
 use std::time::{Duration, Instant};
 
-use crate::{BufferSize, ErrorKind};
+use crate::{Buffer, BufferSize, ErrorKind};
 
 /// One way to open the stream: a sample rate, and a fixed buffer or the
 /// driver's own.
@@ -64,6 +64,95 @@ pub(crate) fn attempts(
     }
     out
 }
+
+/// What the app asked of a stream, whichever way it goes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Wanted {
+    /// A rate to try first.
+    pub(crate) sample_rate: Option<u32>,
+    /// `0` takes the device's own.
+    pub(crate) channels: u16,
+    /// A fixed buffer, or `None` for the driver's.
+    pub(crate) buffer: Option<BufferSize>,
+}
+
+/// A configuration the device offers: a range of rates, a channel count and
+/// a sample format.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Offered {
+    pub(crate) rates: (u32, u32),
+    pub(crate) channels: u16,
+    pub(crate) format: cpal::SampleFormat,
+}
+
+/// One stream configuration to try.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Candidate {
+    pub(crate) attempt: Attempt,
+    pub(crate) channels: u16,
+    pub(crate) format: cpal::SampleFormat,
+}
+
+/// The configurations to try, in order, for an output and an input alike:
+/// the [`attempts`] at the asked channel count (or the device's own) in the
+/// device's default format, then every other configuration the device
+/// offers, at the default rate within its range, with the driver's buffer.
+/// Duplicates are left out.
+pub(crate) fn candidates(
+    wanted: &Wanted,
+    default: &Offered,
+    buffer_range: Option<(u32, u32)>,
+    offered: &[Offered],
+) -> Vec<Candidate> {
+    let channels = match wanted.channels {
+        0 => default.channels,
+        channels => channels,
+    };
+    let device_rate = default.rates.0;
+    let mut out: Vec<Candidate> =
+        attempts(wanted.sample_rate, device_rate, wanted.buffer, buffer_range)
+            .into_iter()
+            .map(|attempt| Candidate {
+                attempt,
+                channels,
+                format: default.format,
+            })
+            .collect();
+    for config in offered {
+        let (min, max) = config.rates;
+        let candidate = Candidate {
+            attempt: Attempt {
+                sample_rate: if min <= max {
+                    device_rate.clamp(min, max)
+                } else {
+                    device_rate
+                },
+                buffer_frames: None,
+            },
+            channels: config.channels,
+            format: config.format,
+        };
+        if !out.contains(&candidate) {
+            out.push(candidate);
+        }
+    }
+    out
+}
+
+/// The buffer to ask for. PulseAudio's own target is about two seconds, for
+/// playback and recording alike, which no app means by the driver's
+/// buffer; it is asked for 20 ms, about a PipeWire quantum, instead.
+pub(crate) fn buffer_for(buffer: Buffer, host: &str, windows: bool) -> Option<BufferSize> {
+    let fixed = match buffer {
+        Buffer::Driver => None,
+        Buffer::Fixed(size) => Some(size),
+        Buffer::FixedOnWindows(size) => windows.then_some(size),
+    };
+    fixed.or_else(|| (host == "pulseaudio").then_some(PULSEAUDIO_DRIVER_BUFFER))
+}
+
+/// What PulseAudio is asked for in place of its own buffer.
+const PULSEAUDIO_DRIVER_BUFFER: BufferSize = BufferSize::Duration(Duration::from_millis(20));
 
 /// A buffer size in frames at `sample_rate`, clamped to `range` when there is
 /// one. At least one frame.
@@ -794,6 +883,91 @@ mod tests {
                     buffer_frames: None
                 },
             ]
+        );
+    }
+
+    #[test]
+    fn inputs_and_outputs_are_planned_alike_from_what_the_device_offers() {
+        use cpal::SampleFormat as F;
+        // A USB microphone: mono 48 kHz in i16 by default, and also stereo
+        // in i32 over 44.1 to 96 kHz.
+        let default = Offered {
+            rates: (48_000, 48_000),
+            channels: 1,
+            format: F::I16,
+        };
+        let offered = [
+            default,
+            Offered {
+                rates: (44_100, 96_000),
+                channels: 2,
+                format: F::I32,
+            },
+            // A range a driver reports wrongly keeps the default rate.
+            Offered {
+                rates: (96_000, 44_100),
+                channels: 2,
+                format: F::F32,
+            },
+        ];
+        let wanted = Wanted {
+            sample_rate: Some(44_100),
+            channels: 0,
+            buffer: Some(BufferSize::Frames(256)),
+        };
+        let tried = candidates(&wanted, &default, None, &offered);
+        let at = |rate, frames, channels, format| Candidate {
+            attempt: Attempt {
+                sample_rate: rate,
+                buffer_frames: frames,
+            },
+            channels,
+            format,
+        };
+        assert_eq!(
+            tried,
+            [
+                // The device's own channels and format, preferred rate first.
+                at(44_100, Some(256), 1, F::I16),
+                at(48_000, Some(256), 1, F::I16),
+                at(44_100, None, 1, F::I16),
+                at(48_000, None, 1, F::I16),
+                // Then what else it offers, at its default rate.
+                at(48_000, None, 2, F::I32),
+                at(48_000, None, 2, F::F32),
+            ]
+        );
+        // Channels the app asks for are asked for.
+        let stereo = Wanted {
+            channels: 2,
+            ..wanted
+        };
+        assert_eq!(candidates(&stereo, &default, None, &[])[0].channels, 2);
+    }
+
+    #[test]
+    fn pulseaudio_is_asked_for_20_ms_in_place_of_its_own_buffer() {
+        let ms = |ms| BufferSize::Duration(Duration::from_millis(ms));
+        assert_eq!(
+            buffer_for(Buffer::Driver, "pulseaudio", false),
+            Some(ms(20))
+        );
+        assert_eq!(buffer_for(Buffer::Driver, "pipewire", false), None);
+        assert_eq!(
+            buffer_for(Buffer::FixedOnWindows(ms(100)), "pulseaudio", false),
+            Some(ms(20))
+        );
+        assert_eq!(
+            buffer_for(Buffer::FixedOnWindows(ms(100)), "wasapi", true),
+            Some(ms(100))
+        );
+        assert_eq!(
+            buffer_for(Buffer::FixedOnWindows(ms(100)), "coreaudio", false),
+            None
+        );
+        assert_eq!(
+            buffer_for(Buffer::Fixed(BufferSize::Frames(512)), "pulseaudio", false),
+            Some(BufferSize::Frames(512))
         );
     }
 

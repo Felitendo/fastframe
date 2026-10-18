@@ -1,6 +1,6 @@
 [package]
 name = "fastframe-audio"
-description = "Audio output for egui apps: a device stream that really idles when paused, follows the default device and reopens after failures"
+description = "Audio output and input for egui apps: a device stream that really idles when paused, follows the default device and reopens after failures"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,7 +9,7 @@ authors.workspace = true
 repository.workspace = true
 homepage.workspace = true
 readme = "README.md"
-keywords = ["audio", "cpal", "output", "egui", "desktop"]
+keywords = ["audio", "cpal", "output", "input", "egui"]
 categories = ["multimedia::audio"]
 
 [features]
