@@ -519,6 +519,20 @@ impl Idle {
     }
 }
 
+/// What the callback leaves after a render: whether the renderer said it was
+/// idle, with the count of resumes the render began at, so a render that
+/// began before a resume (before the app queued a sound and woke the
+/// output) cannot leave an idle mark that outlives it.
+pub(crate) fn idle_mark(wake: u64, idle: bool) -> u64 {
+    (wake << 1) | u64::from(idle)
+}
+
+/// Whether the mark says idle, and is from a render since the latest of
+/// `wakes` resumes.
+pub(crate) fn idle_now(mark: u64, wakes: u64) -> bool {
+    mark & 1 == 1 && mark >> 1 == wakes & (u64::MAX >> 1)
+}
+
 /// How long a playing output may stand still before it counts as stuck: a
 /// few times the longest device buffer.
 pub(crate) const STALL: Duration = Duration::from_secs(2);
@@ -1187,6 +1201,18 @@ mod tests {
         assert!(idle.observe(true, start + ms(6000), after));
         // Zero pauses at the first look.
         assert!(Idle::default().observe(true, start, Duration::ZERO));
+    }
+
+    #[test]
+    fn an_idle_mark_from_before_a_resume_is_stale() {
+        assert!(!idle_now(0, 0), "nothing rendered yet");
+        assert!(idle_now(idle_mark(0, true), 0));
+        assert!(!idle_now(idle_mark(0, false), 0));
+        // The callback began rendering, the app queued a sound and resumed,
+        // then the render ended saying idle: not idle.
+        assert!(!idle_now(idle_mark(0, true), 1));
+        assert!(idle_now(idle_mark(1, true), 1));
+        assert!(idle_now(idle_mark(u64::MAX, true), u64::MAX), "wraps");
     }
 
     #[test]

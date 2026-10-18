@@ -88,8 +88,12 @@ pub(crate) struct Shared {
     /// timeline started again (see [`plan::Timeline`]).
     pub(crate) epoch: std::sync::atomic::AtomicU64,
     /// What [`Render::idle`] said after the last render, when the output
-    /// pauses when idle.
-    pub(crate) idle: AtomicBool,
+    /// pauses when idle, marked with the [`wakes`](Self::wakes) count the
+    /// render began at (see [`plan::idle_mark`]).
+    pub(crate) idle: std::sync::atomic::AtomicU64,
+    /// Counts resumes, each of which may have given the renderer something
+    /// to play, so an idle mark from a render before it is stale.
+    pub(crate) wakes: std::sync::atomic::AtomicU64,
 }
 
 impl Shared {
@@ -99,7 +103,8 @@ impl Shared {
             failed: AtomicBool::new(false),
             errors: Mutex::new(Vec::new()),
             epoch: std::sync::atomic::AtomicU64::new(0),
-            idle: AtomicBool::new(false),
+            idle: std::sync::atomic::AtomicU64::new(0),
+            wakes: std::sync::atomic::AtomicU64::new(0),
         }
     }
 
@@ -120,9 +125,55 @@ impl Shared {
     }
 }
 
+/// A stream to play and pause: cpal's, or in tests a stand-in.
+pub(crate) enum Handle {
+    Cpal(cpal::Stream),
+    #[cfg(test)]
+    Fake(Arc<FakeStream>),
+}
+
+impl Handle {
+    pub(crate) fn play(&self) -> Result<(), cpal::Error> {
+        match self {
+            Self::Cpal(stream) => stream.play(),
+            #[cfg(test)]
+            Self::Fake(stream) => {
+                stream.plays.fetch_add(1, Ordering::Relaxed);
+                stream.playing.store(true, Ordering::Relaxed);
+                Ok(())
+            }
+        }
+    }
+
+    pub(crate) fn pause(&self) -> Result<(), cpal::Error> {
+        match self {
+            Self::Cpal(stream) => stream.pause(),
+            #[cfg(test)]
+            Self::Fake(stream) => {
+                stream.pauses.fetch_add(1, Ordering::Relaxed);
+                stream.playing.store(false, Ordering::Relaxed);
+                Ok(())
+            }
+        }
+    }
+}
+
+/// What a test's stand-in stream was asked to do.
+#[cfg(test)]
+#[derive(Debug, Default)]
+pub(crate) struct FakeStream {
+    pub(crate) playing: AtomicBool,
+    pub(crate) plays: std::sync::atomic::AtomicU32,
+    pub(crate) pauses: std::sync::atomic::AtomicU32,
+}
+
+/// How a session opens its stream: [`open`], or in tests a stand-in.
+pub(crate) type Opener<E> =
+    fn(&Settings, &Arc<Mutex<E>>, &Clock, &Arc<Shared>, bool) -> Result<Live, OpenError>;
+
 /// An open stream and what it was opened with.
 pub(crate) struct Live {
-    pub(crate) stream: cpal::Stream,
+    pub(crate) stream: Handle,
     pub(crate) device: String,
     /// The device's own id, as cpal gives it without the host.
     pub(crate) own_id: String,
@@ -318,7 +369,7 @@ pub(crate) fn open<E: Engine>(
                     host.id().name()
                 );
                 return Ok(Live {
-                    stream,
+                    stream: Handle::Cpal(stream),
                     device: name,
                     own_id,
                     host: host.id().to_string(),
@@ -568,13 +619,17 @@ where
             // The app's thread only takes the lock while (re)opening, before
             // the stream starts; a contended lock renders silence rather
             // than wait.
+            // Taken before rendering: a resume after this makes the mark
+            // this render leaves stale.
+            let wake = shared.wakes.load(Ordering::Acquire);
             let rendered = match renderer.try_lock() {
                 Ok(mut renderer) => {
                     for (start, end) in plan::blocks(scratch.len(), channels, max_block) {
                         renderer.0.render(&mut scratch[start..end]);
                     }
                     if watch_idle {
-                        shared.idle.store(renderer.0.idle(), Ordering::Relaxed);
+                        let mark = plan::idle_mark(wake, renderer.0.idle());
+                        shared.idle.store(mark, Ordering::Release);
                     }
                     true
                 }
@@ -584,7 +639,8 @@ where
                         renderer.0.render(&mut scratch[start..end]);
                     }
                     if watch_idle {
-                        shared.idle.store(renderer.0.idle(), Ordering::Relaxed);
+                        let mark = plan::idle_mark(wake, renderer.0.idle());
+                        shared.idle.store(mark, Ordering::Release);
                     }
                     true
                 }
