@@ -169,6 +169,15 @@ carries on across reopens (another device, another rate) without jumping.
 Take differences between readings to follow a clip. `Clock::latency()` is the
 latency itself, for lining up a picture with the sound.
 
+## The audio system
+
+`fastframe_audio::host()` names the audio system the process plays
+through (`PipeWire`, `PulseAudio`, `ALSA`, `CoreAudio` or `WASAPI`), for the
+log. The process chooses it the first time it opens or lists a device and
+keeps that choice, so every stream and listing goes to the same system;
+each still gets a fresh connection to it, so new devices show up and a
+restarted sound server is reached again.
+
 ## Linux sound servers
 
 On Linux the output goes to the sound server itself, never through ALSA's

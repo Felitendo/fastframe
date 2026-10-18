@@ -554,6 +554,19 @@ impl<R: Render> Output<R> {
     }
 }
 
+/// The name of the audio system the crate plays through, for the log:
+/// `PipeWire`, `PulseAudio` or `ALSA` on Linux, `CoreAudio` on macOS,
+/// `WASAPI` on Windows.
+///
+/// The process chooses it the first time it opens or lists a device (cpal's
+/// default host: on Linux PipeWire, then PulseAudio, then ALSA, whichever is
+/// running) and keeps it. Asking before that makes the choice, which can take
+/// a moment, so ask off the UI thread or after opening.
+#[must_use]
+pub fn host() -> &'static str {
+    stream::host_name()
+}
+
 /// The output devices' names, for a device picker. Nothing is opened, so a
 /// device another program or a USB peripheral is using is left alone.
 pub fn output_device_names() -> Result<Vec<String>, OpenError> {

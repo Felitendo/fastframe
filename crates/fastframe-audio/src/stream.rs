@@ -2,13 +2,50 @@
 //! stream in the device's sample format, and watching the default output.
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::time::Duration;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 
 use crate::plan::{self, Attempt, Choice};
 use crate::{Clock, Device, OpenError, OutputError, OutputOptions, Render};
+
+/// The audio system this process chose, the first time it asked.
+///
+/// Only the choice is kept, not the `cpal::Host`. cpal's PipeWire host lists
+/// the devices once, when it is made, so a kept one would never see a headset
+/// plugged in later; its PulseAudio host holds a connection that a restart
+/// of the server breaks; and a host is not `Sync` on every backend. Making a
+/// host from its id skips the probing of `cpal::default_host` and keeps every
+/// stream and listing of the process on the same system.
+static HOST: OnceLock<cpal::HostId> = OnceLock::new();
+
+/// A fresh host of the audio system this process uses: the default host the
+/// first time, the same system afterwards. When that system cannot be
+/// reached just now (a sound server restarting), the default host of the
+/// moment, without changing the choice, so the next call tries it again.
+pub(crate) fn host() -> cpal::Host {
+    if let Some(&id) = HOST.get() {
+        match cpal::host_from_id(id) {
+            Ok(host) => return host,
+            Err(error) => {
+                log::debug!("audio: {} is not available just now: {error}", id.name());
+            }
+        }
+    }
+    let host = cpal::default_host();
+    let _ = HOST.set(host.id());
+    host
+}
+
+/// The name of the audio system this process uses, choosing it if it has not
+/// yet.
+pub(crate) fn host_name() -> &'static str {
+    match HOST.get() {
+        Some(id) => id.name(),
+        None => host().id().name(),
+    }
+}
 
 /// What the callback and the error callback share with the [`Output`](crate::Output).
 #[derive(Debug, Default)]
@@ -63,7 +100,7 @@ pub(crate) fn open<R: Render>(
     shared: &Arc<Shared>,
     paused: bool,
 ) -> Result<Live, OpenError> {
-    let host = cpal::default_host();
+    let host = host();
     let (device, default_at_open) = pick(&host, &options.device)?;
     let name = device_name(&device).map_err(OpenError::from)?;
     let default = device.default_output_config().map_err(OpenError::from)?;
@@ -140,13 +177,14 @@ pub(crate) fn open<R: Render>(
                     stream.play().map_err(OpenError::from)?;
                 }
                 log::info!(
-                    "audio output: {name} at {} Hz, {channels} channels, {}",
+                    "audio output: {name} at {} Hz, {channels} channels, {}, through {}",
                     attempt.sample_rate,
                     attempt
                         .buffer_frames
                         .map_or("the driver's buffer".to_owned(), |frames| format!(
                             "{frames} frames"
-                        ))
+                        )),
+                    host.id().name()
                 );
                 return Ok(Live {
                     stream,
@@ -352,7 +390,7 @@ where
 /// The default output's name, or `None` when there is none or it cannot be
 /// named just now.
 pub(crate) fn default_output_name() -> Option<String> {
-    cpal::default_host()
+    host()
         .default_output_device()
         .and_then(|device| device_name(&device).ok())
 }
@@ -360,7 +398,7 @@ pub(crate) fn default_output_name() -> Option<String> {
 /// Every output device's name. Nothing is opened. A device that cannot be
 /// named is left out.
 pub(crate) fn output_device_names() -> Result<Vec<String>, OpenError> {
-    Ok(cpal::default_host()
+    Ok(host()
         .output_devices()
         .map_err(OpenError::from)?
         .filter_map(|device| device_name(&device).ok())
