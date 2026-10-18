@@ -17,6 +17,15 @@ log.workspace = true
 # Already used by the consumers: one background runtime handles delivery and
 # clicks without blocking the UI or starting a thread for every notification.
 tokio = { version = "1", features = ["rt", "sync", "time", "macros"] }
+# Already in the workspace through fastframe-emoji, and in the apps through
+# egui's image loaders: decodes the app's logo and writes Windows' opaque
+# tile of it, so the icon keeps its colours (see src/logo.rs).
+png = "0.18"
+
+# The per-user cache folder the logo file is written to, as fastframe-dirs
+# computes the apps' folders.
+[target.'cfg(any(target_os = "linux", target_os = "windows"))'.dependencies]
+directories.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # The apps already use zbus. One shared connection owns IDs and subscriptions;
@@ -67,6 +76,8 @@ print_stdout = "warn"
 print_stderr = "warn"
 
 [dev-dependencies]
+# The logo file is written in a throwaway folder.
+tempfile.workspace = true
 # Exercise Windows payload mappings on every CI platform without native calls.
 sha2 = "0.11"
 url = "2"

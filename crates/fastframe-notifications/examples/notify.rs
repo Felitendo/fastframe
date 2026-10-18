@@ -1,7 +1,8 @@
 //! Manual native smoke test. All content is synthetic.
 //! On macOS package this binary in a signed app whose bundle identifier matches
 //! FASTFRAME_NOTIFICATION_APP_ID, then launch the executable from that bundle.
-//! FASTFRAME_NOTIFICATION_ICON names an absolute logo file for `App::icon_file`.
+//! FASTFRAME_NOTIFICATION_LOGO names a PNG for `App::logo`, and
+//! FASTFRAME_NOTIFICATION_BACKGROUND its tile colour as `rrggbb` (violet if unset).
 use fastframe_notifications::{App, Client, Notification, Sound};
 
 fn main() {
@@ -25,9 +26,15 @@ fn exercise() -> Result<(), fastframe_notifications::Error> {
     let id = std::env::var("FASTFRAME_NOTIFICATION_APP_ID")
         .unwrap_or_else(|_| "org.fastframe.notification-example".into());
     let mut app = App::new(id, "Fastframe notification example").desktop_entry("fastframe-example");
-    // An absolute PNG (or ICO on Windows) of a logo, to check the app icon.
-    if let Some(logo) = std::env::var_os("FASTFRAME_NOTIFICATION_ICON") {
-        app = app.icon_file(logo);
+    // A PNG of a logo, to check the app icon.
+    if let Some(logo) = std::env::var_os("FASTFRAME_NOTIFICATION_LOGO") {
+        let png = std::fs::read(logo).map_err(|_| fastframe_notifications::Error::InvalidInput)?;
+        let background = std::env::var("FASTFRAME_NOTIFICATION_BACKGROUND")
+            .ok()
+            .and_then(|hex| u32::from_str_radix(&hex, 16).ok())
+            .unwrap_or(0x6a4fd8)
+            .to_be_bytes();
+        app = app.logo(&png, [background[1], background[2], background[3]]);
     }
     let client = Client::new(app)?;
     println!("Permission: {:?}", client.request_permission_blocking()?);

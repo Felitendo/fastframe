@@ -59,8 +59,9 @@ pub(crate) fn windows_xml(value: &Notification) -> String {
 }
 
 /// Values of the app's `AppUserModelId` registry key. `IconUri` names the
-/// logo Windows shows on the app's toasts; without it they show a blank icon.
-/// The logo's own background shows, so `IconBackgroundColor` stays unset.
+/// logo tile Windows shows on the app's toasts; without it they show a blank
+/// icon. The tile is opaque, so `IconBackgroundColor` stays unset (setting it
+/// did not stop the dark theme from inverting a monochrome icon).
 #[cfg(any(target_os = "windows", test))]
 pub(crate) fn windows_identity(app: &App) -> Vec<(&'static str, String)> {
     let mut values = vec![("DisplayName", app.name.clone())];
@@ -182,7 +183,10 @@ mod tests {
         );
         let logo = std::env::temp_dir().join("example.ico");
         assert_eq!(
-            windows_identity(&app.icon_file(&logo)),
+            windows_identity(&App {
+                icon_file: Some(logo.clone()),
+                ..app
+            }),
             vec![
                 ("DisplayName", "Example".to_owned()),
                 ("IconUri", logo.to_string_lossy().into_owned()),
@@ -194,7 +198,10 @@ mod tests {
         let named = App::new("com.example.app", "Example").icon("example");
         assert_eq!(linux_app_icon(&named, |_| false), "example");
         let logo = std::env::temp_dir().join("example.png");
-        let app = named.icon_file(&logo);
+        let app = App {
+            icon_file: Some(logo.clone()),
+            ..named.clone()
+        };
         assert_eq!(linux_app_icon(&app, |name| name == "example"), "example");
         assert_eq!(
             linux_app_icon(&app, |_| false),

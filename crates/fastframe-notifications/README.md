@@ -6,12 +6,15 @@ background task notifications. No window or egui dependency.
 
 ```rust,no_run
 use fastframe_notifications::{App, Client, Event, Notification, Sound};
+# let logo_png: &[u8] = &[];
 
 let notifications = Client::new(
     App::new("com.example.app", "Example")
         .desktop_entry("example")
         .icon("example")
-        .icon_file("/home/me/.local/share/example/logo.png"),
+        // A PNG of the logo, such as include_bytes!("../assets/logo.png"),
+        // and a saturated colour from the app's brand.
+        .logo(logo_png, [0x6a, 0x4f, 0xd8]),
 )?;
 let notice = notifications.show_with(
     Notification::new("Export complete")
@@ -62,15 +65,24 @@ changes in system settings take effect without a restart.
 
 Use the installed application's identity, not another program's identity.
 On Windows, `App::new`'s ID must match the shortcut's AppUserModelID. Fastframe
-registers its display name for portable builds, and `icon_file` as its
-`IconUri`, without which toasts show a blank icon. Such an ID has no
+registers its display name for portable builds. Such an ID has no
 notification settings until Windows has shown its toasts, so it reports
-`Permission::NotDetermined` and toasts are still shown. Linux uses the desktop entry,
-including Flatpak's exported identity, and the `icon` theme name. When neither
-the `hicolor` theme nor `pixmaps` has that icon, as in a portable archive or a
-development build, Linux sends the `icon_file` path instead. Write the logo to
-a stable file once, for example in the app's data folder, and pass its
-absolute path. Linux reports `Permission::Unknown`
+`Permission::NotDetermined` and toasts are still shown. Linux uses the desktop
+entry, including Flatpak's exported identity, and the `icon` theme name.
+
+`App::logo` gives the desktops that read the app's icon from a file a PNG of
+the logo, and a colour from the app's brand. `Client::new` writes the file on
+its worker, to `notification-logo.png` in a folder named after the app's ID in
+the per-user cache (`%LOCALAPPDATA%` on Windows, `~/.cache` on Linux), and only
+when it changed. Windows registers it as the AppUserModelID's `IconUri`, without
+which toasts show a blank icon. It is not the PNG itself but an opaque square of
+the colour with the logo centred in four fifths of it: in its dark theme
+Windows 11 inverts the colours of an icon it judges monochrome, such as a
+one-hue mark on transparency or a dark, mostly grey tile, and it left every
+opaque icon framed in a saturated colour alone in both themes. A grey colour
+does not help. Linux sends the PNG itself when neither the `hicolor` theme nor
+`pixmaps` has the `icon` name, as in a portable archive or a development build;
+installed packages keep following the theme. Linux reports `Permission::Unknown`
 when the service is available because Freedesktop does not expose per-app
 permission settings.
 
@@ -88,7 +100,7 @@ AppleScript, Terminal impersonation, or busy-run-loop heuristic is used.
 | Click and named actions while observed | Yes | Yes | Yes |
 | Replace and withdraw by key | Yes, within this client | Yes, including after restart | Yes, including after restart |
 | Live progress | Percentage and plain text | Ordinary notifications | Ordinary notifications |
-| App icon | Theme icon, or `icon_file` | Application bundle icon | `icon_file` |
+| App icon | Theme icon, or `logo` | Application bundle icon | `logo` on its colour |
 | Avatar | Local image | Application icon | Local circular image |
 | Default / silent sound | Yes | Yes | Yes |
 | Named sound | Sound theme | File in bundle Resources | System default |
@@ -107,7 +119,8 @@ application's delivery protocol, not the OS backend.
 
 ## Tests
 
-Lifecycle tests use a fake backend and controlled futures. They cover close
+The logo tile's composition and the logo file's rewriting are tested on every
+platform. Lifecycle tests use a fake backend and controlled futures. They cover close
 before and during delivery, releasing observation without removing history,
 coalesced updates, completion followed by release, failure reporting and bounded
 admission. Text escaping and Windows ID/payload mappings run without native

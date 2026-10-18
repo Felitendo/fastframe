@@ -9,6 +9,7 @@
 use std::{path::PathBuf, sync::Arc};
 use tokio::sync::{mpsc, oneshot, watch};
 
+mod logo;
 #[cfg(any(target_os = "linux", target_os = "windows", test))]
 mod mapping;
 #[cfg(target_os = "linux")]
@@ -78,7 +79,19 @@ pub struct App {
     pub(crate) name: String,
     pub(crate) desktop_entry: String,
     pub(crate) icon: String,
+    pub(crate) logo: Option<Logo>,
+    /// The logo file written by [`Client::new`], for the platform to read.
     pub(crate) icon_file: Option<PathBuf>,
+}
+/// The app's logo, a PNG, and the colour of the tile Windows shows it on.
+#[derive(Clone, Debug)]
+pub(crate) struct Logo {
+    pub(crate) png: Arc<[u8]>,
+    #[cfg_attr(
+        not(target_os = "windows"),
+        expect(dead_code, reason = "only Windows composes the tile")
+    )]
+    pub(crate) background: [u8; 3],
 }
 impl App {
     /// `id` is the bundle ID / Windows shortcut AUMID; `name` is the display name.
@@ -87,6 +100,7 @@ impl App {
         Self {
             desktop_entry: id.clone(),
             icon: id.clone(),
+            logo: None,
             icon_file: None,
             id,
             name: name.into(),
@@ -102,16 +116,25 @@ impl App {
         self.icon = value.into();
         self
     }
-    /// Absolute path of an image of the app's logo, a PNG (or an ICO on Windows).
+    /// The app's logo, a PNG of up to 1024 pixels a side, and `background`,
+    /// an sRGB colour from the app's brand.
     ///
-    /// Windows registers it as the AppUserModelID's `IconUri`, so toasts show it
-    /// instead of a blank icon. Linux sends it in place of [`App::icon`] when no
-    /// `hicolor` theme or `pixmaps` folder has an icon of that name, as in a
-    /// portable or development build; installed packages keep following the
-    /// theme. macOS always shows the application bundle's icon. A relative path
-    /// makes [`Client::new`] return [`Error::InvalidInput`].
-    pub fn icon_file(mut self, path: impl Into<PathBuf>) -> Self {
-        self.icon_file = Some(path.into());
+    /// Windows shows the logo on every toast, centred on an opaque square of
+    /// `background`. Windows 11 inverts the colours of an icon it judges
+    /// monochrome, a one-hue mark or a dark, mostly grey tile, in its dark
+    /// theme; a band of a saturated colour around the logo keeps it as drawn,
+    /// so pick a saturated colour, not a grey. Linux shows the PNG itself when
+    /// no `hicolor` theme or `pixmaps` folder has an icon named [`App::icon`],
+    /// as in a portable archive or a development build; installed packages
+    /// keep following the theme. macOS always shows the application bundle's
+    /// icon. [`Client::new`] writes the file the desktop reads to the per-user
+    /// cache, in a folder named after the app's ID, and returns
+    /// [`Error::InvalidInput`] when `png` is not such a PNG.
+    pub fn logo(mut self, png: &[u8], background: [u8; 3]) -> Self {
+        self.logo = Some(Logo {
+            png: png.into(),
+            background,
+        });
         self
     }
     fn validate(&self) -> Result<(), Error> {
@@ -124,9 +147,10 @@ impl App {
             || self.name.is_empty()
             || self.name.len() > 1024
             || self.name.contains('\0')
-            || self.icon_file.as_ref().is_some_and(|path| {
-                !path.is_absolute() || path.as_os_str().to_string_lossy().contains('\0')
-            })
+            || self
+                .logo
+                .as_ref()
+                .is_some_and(|logo| logo::decode(&logo.png).is_err())
         {
             Err(Error::InvalidInput)
         } else {
@@ -277,12 +301,16 @@ pub struct Client {
 }
 impl Client {
     /// Start one worker. No native calls or permission prompts run on the calling thread.
-    pub fn new(app: App) -> Result<Self, Error> {
+    /// The app's logo file is written on the worker too.
+    pub fn new(mut app: App) -> Result<Self, Error> {
         app.validate()?;
         let (sender, receiver) = mpsc::channel(64);
         std::thread::Builder::new()
             .name("fastframe-notifications".into())
-            .spawn(move || worker::run(app, receiver))
+            .spawn(move || {
+                app.icon_file = logo::file(&app);
+                worker::run(app, receiver);
+            })
             .map_err(|_| Error::Stopped)?;
         Ok(Self {
             sender,
@@ -452,11 +480,16 @@ mod tests {
         }
         let app = App::new("com.example.app", "Test");
         assert_eq!(
-            app.clone().icon_file("icons/app.png").validate(),
+            app.clone().logo(b"not a png", [0, 0, 255]).validate(),
             Err(Error::InvalidInput)
         );
-        let absolute = std::env::temp_dir().join("app.png");
-        assert_eq!(app.icon_file(absolute).validate(), Ok(()));
+        let mut png = Vec::new();
+        let mut encoder = png::Encoder::new(&mut png, 1, 1);
+        encoder.set_color(png::ColorType::Rgba);
+        let mut writer = encoder.write_header().unwrap();
+        writer.write_image_data(&[1, 2, 3, 4]).unwrap();
+        writer.finish().unwrap();
+        assert_eq!(app.logo(&png, [0, 0, 255]).validate(), Ok(()));
         for key in ["", "a\nb", "a\0b"] {
             assert_eq!(
                 Notification::new("Title").key(key).validate(),
