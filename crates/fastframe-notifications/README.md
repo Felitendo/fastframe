@@ -63,7 +63,9 @@ changes in system settings take effect without a restart.
 Use the installed application's identity, not another program's identity.
 On Windows, `App::new`'s ID must match the shortcut's AppUserModelID. Fastframe
 registers its display name for portable builds, and `icon_file` as its
-`IconUri`, without which toasts show a blank icon. Linux uses the desktop entry,
+`IconUri`, without which toasts show a blank icon. Such an ID has no
+notification settings until Windows has shown its toasts, so it reports
+`Permission::NotDetermined` and toasts are still shown. Linux uses the desktop entry,
 including Flatpak's exported identity, and the `icon` theme name. When neither
 the `hicolor` theme nor `pixmaps` has that icon, as in a portable archive or a
 development build, Linux sends the `icon_file` path instead. Write the logo to

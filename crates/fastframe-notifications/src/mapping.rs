@@ -1,7 +1,7 @@
 #[cfg(any(target_os = "linux", target_os = "windows", test))]
 use crate::App;
 #[cfg(any(target_os = "windows", test))]
-use crate::{Notification, Sound};
+use crate::{Error, Notification, Permission, Sound};
 #[cfg(any(target_os = "windows", test))]
 use sha2::{Digest as _, Sha256};
 #[cfg(any(target_os = "linux", test))]
@@ -68,6 +68,23 @@ pub(crate) fn windows_identity(app: &App) -> Vec<(&'static str, String)> {
         values.push(("IconUri", path.to_string_lossy().into_owned()));
     }
     values
+}
+
+/// Permission from `ToastNotifier.Setting`: whether it is enabled, or the
+/// HRESULT it failed with. An AppUserModelID without a Start menu shortcut or
+/// a package has no notification settings, and Windows reports
+/// `ERROR_NOT_FOUND`. The user has turned nothing off, so a toast may be
+/// shown; treating it as a failure kept every such app's toasts from showing.
+#[cfg(any(target_os = "windows", test))]
+pub(crate) fn windows_permission(setting: Result<bool, i32>) -> Result<Permission, Error> {
+    /// `HRESULT_FROM_WIN32(ERROR_NOT_FOUND)`.
+    const ELEMENT_NOT_FOUND: i32 = 0x8007_0490_u32 as i32;
+    match setting {
+        Ok(true) => Ok(Permission::Granted),
+        Ok(false) => Ok(Permission::Denied),
+        Err(ELEMENT_NOT_FOUND) => Ok(Permission::NotDetermined),
+        Err(_) => Err(Error::Delivery),
+    }
 }
 
 /// The Freedesktop `app_icon`: the theme name while an installed icon carries
@@ -143,6 +160,19 @@ pub(crate) fn linux_icon_installed(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn an_app_without_windows_notification_settings_may_still_show_toasts() {
+        assert_eq!(windows_permission(Ok(true)), Ok(Permission::Granted));
+        assert_eq!(windows_permission(Ok(false)), Ok(Permission::Denied));
+        assert_eq!(
+            windows_permission(Err(0x8007_0490_u32 as i32)),
+            Ok(Permission::NotDetermined)
+        );
+        assert_eq!(
+            windows_permission(Err(0x8000_4005_u32 as i32)),
+            Err(Error::Delivery)
+        );
+    }
     #[test]
     fn windows_identity_names_the_logo_only_when_given() {
         let app = App::new("com.example.app", "Example");

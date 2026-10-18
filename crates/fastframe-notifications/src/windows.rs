@@ -182,13 +182,12 @@ impl worker::Backend for Native {
     async fn permission(&self, app: &App, _request: bool) -> Result<Permission, Error> {
         identity(app)?;
         let setting = ToastNotificationManager::CreateToastNotifierWithId(&HSTRING::from(&app.id))
-            .and_then(|notifier| notifier.Setting())
-            .map_err(|_| Error::Delivery)?;
-        Ok(if setting == NotificationSetting::Enabled {
-            Permission::Granted
-        } else {
-            Permission::Denied
-        })
+            .and_then(|notifier| notifier.Setting());
+        crate::mapping::windows_permission(
+            setting
+                .map(|setting| setting == NotificationSetting::Enabled)
+                .map_err(|error| error.code().0),
+        )
     }
     async fn withdraw(&self, app: &App, key: &str) -> Result<(), Error> {
         let (tag, group) = tags(key);
