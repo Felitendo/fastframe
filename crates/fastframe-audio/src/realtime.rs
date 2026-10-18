@@ -9,17 +9,30 @@
 //! has about 10 ms each period; on a busy machine an ordinary thread waits
 //! longer than that, and the device plays silence (crmne/spotifast#785).
 //!
-//! So on the first callback of each stream the output hands that thread's
-//! id to a short-lived helper, which asks RTKit (`org.freedesktop.RealtimeKit1`
-//! on the system bus, which PipeWire uses for its own threads) to make it
-//! real-time, or failing that to raise its nice level. The callback itself
-//! never waits for D-Bus. Best effort: without RTKit (a minimal system, a
-//! Flatpak sandbox without the portal) or when RTKit refuses, the outcome is
-//! logged once and the thread carries on as it was.
+//! So on the first callback of each stream on a device that waits for the
+//! hardware ([`plan::realtime_eligible`], cpal's own rule) the output hands
+//! that thread's id to a short-lived helper, which asks RTKit
+//! (`org.freedesktop.RealtimeKit1` on the system bus, which PipeWire uses
+//! for its own threads) to make it real-time, or failing that to raise its
+//! nice level. The callback itself never waits for D-Bus. Best effort:
+//! without RTKit (a minimal system, a Flatpak sandbox) or when RTKit
+//! refuses, the outcome is logged once and the thread carries on as it was.
+//!
+//! A real-time thread that never waits uses up `RLIMIT_RTTIME` and the
+//! kernel kills the whole process (0.10.0 did this on ALSA's `null` PCM).
+//! So every callback also checks, window by window, how much of the time its
+//! thread ran ([`plan::SpinWindow`]); one that ran for most of a window
+//! drops back to ordinary scheduling itself, which any thread may do, long
+//! before the limit, and the helper does not promote it afterwards. No
+//! signal handler is installed.
 #![allow(unsafe_code)]
 
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
+use std::time::{Duration, Instant};
+
+use crate::plan;
 
 /// The real-time priority asked for, within RTKit's maximum: below the
 /// PipeWire daemon's own threads, as for Firefox and cpal.
@@ -28,42 +41,80 @@ const PRIORITY: u32 = 10;
 /// minimum: PipeWire's own fallback.
 const NICE: i32 = -11;
 
-/// Hands the callback thread to the helper once.
-pub(crate) struct Promoter(Option<SyncSender<libc::pid_t>>);
+/// Hands the callback thread to the helper once, and keeps it from spinning
+/// at a raised priority.
+pub(crate) struct Promoter {
+    sender: Option<SyncSender<libc::pid_t>>,
+    /// Set once the thread was seen spinning: the helper must not promote it.
+    spinning: Arc<AtomicBool>,
+    window: plan::SpinWindow,
+}
 
 impl Promoter {
-    /// Starts the helper, which waits for the callback's first call and ends
-    /// with the stream if that never comes.
-    pub(crate) fn start() -> Self {
+    /// For a stream on a device that waits for the hardware, starts the
+    /// helper, which waits for the callback's first call and ends with the
+    /// stream if that never comes. For any other, only the spin guard.
+    pub(crate) fn start(eligible: bool, device: &str) -> Self {
+        let spinning = Arc::new(AtomicBool::new(false));
+        let mut promoter = Self {
+            sender: None,
+            spinning: Arc::clone(&spinning),
+            window: plan::SpinWindow::default(),
+        };
+        if !eligible {
+            static REPORTED: AtomicBool = AtomicBool::new(false);
+            if !REPORTED.swap(true, Ordering::Relaxed) {
+                log::info!(
+                    "audio output: callback thread keeps ordinary priority: {device} may not wait \
+                     for the hardware"
+                );
+            }
+            return promoter;
+        }
         let (sender, receiver) = sync_channel(1);
         let started = std::thread::Builder::new()
             .name("audio-realtime".into())
-            .spawn(move || promote_from(&receiver));
+            .spawn(move || promote_from(&receiver, &spinning));
         match started {
-            Ok(_) => Self(Some(sender)),
+            Ok(_) => promoter.sender = Some(sender),
             Err(error) => {
                 log::debug!("audio output: cannot start the real-time helper: {error}");
-                Self(None)
             }
         }
+        promoter
     }
 
-    /// Called on every callback; only the first sends the thread's id. A
-    /// system call and a send on a channel with room, so it never blocks.
+    /// Called on every callback. The first sends the thread's id; each one
+    /// reads the thread's CPU time and, at the end of a window in which the
+    /// thread hardly waited, takes back any raised priority. A few system
+    /// calls and a send on a channel with room, so it never blocks.
     pub(crate) fn on_callback(&mut self) {
-        if let Some(sender) = self.0.take() {
+        if let Some(sender) = self.sender.take() {
             // SAFETY: `gettid` takes nothing and returns the calling thread's id.
             let thread = unsafe { libc::gettid() };
             let _ = sender.try_send(thread);
         }
+        if self.window.observe(Instant::now(), thread_cpu_time()) {
+            self.spinning.store(true, Ordering::Release);
+            if raised() {
+                lower();
+                static REPORTED: AtomicBool = AtomicBool::new(false);
+                if !REPORTED.swap(true, Ordering::Relaxed) {
+                    log::warn!(
+                        "audio output: the callback thread never waits for this device; it \
+                         keeps ordinary priority"
+                    );
+                }
+            }
+        }
     }
 }
 
-fn promote_from(receiver: &Receiver<libc::pid_t>) {
+fn promote_from(receiver: &Receiver<libc::pid_t>, spinning: &AtomicBool) {
     let Ok(thread) = receiver.recv() else {
         return;
     };
-    if already_real_time(thread) {
+    if already_real_time(thread) || spinning.load(Ordering::Acquire) {
         return;
     }
     let outcome = rtkit::promote(thread, PRIORITY, NICE);
@@ -103,6 +154,47 @@ fn already_real_time(thread: libc::pid_t) -> bool {
     policy == libc::SCHED_FIFO || policy == libc::SCHED_RR
 }
 
+/// The CPU time the calling thread has used.
+fn thread_cpu_time() -> Duration {
+    let mut time = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    // SAFETY: writes the calling thread's CPU clock into a valid timespec.
+    if unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut time) } != 0 {
+        return Duration::ZERO;
+    }
+    Duration::new(
+        u64::try_from(time.tv_sec).unwrap_or(0),
+        u32::try_from(time.tv_nsec).unwrap_or(0),
+    )
+}
+
+/// Whether the calling thread runs real-time or above ordinary nice.
+fn raised() -> bool {
+    // SAFETY: plain reads of the calling thread's own scheduling; `gettid`
+    // with PRIO_PROCESS names only this thread on Linux.
+    unsafe {
+        let policy = libc::sched_getscheduler(0);
+        if policy == libc::SCHED_FIFO || policy == libc::SCHED_RR {
+            return true;
+        }
+        *libc::__errno_location() = 0;
+        let nice = libc::getpriority(libc::PRIO_PROCESS, libc::gettid() as libc::id_t);
+        nice < 0 && *libc::__errno_location() == 0
+    }
+}
+
+/// Puts the calling thread back to ordinary scheduling at nice 0. Lowering
+/// one's own priority needs no privilege.
+fn lower() {
+    let param = libc::sched_param { sched_priority: 0 };
+    // SAFETY: changes only the calling thread's own policy and nice value.
+    unsafe {
+        libc::sched_setscheduler(0, libc::SCHED_OTHER, &param);
+        libc::setpriority(libc::PRIO_PROCESS, libc::gettid() as libc::id_t, 0);
+    }
+}
 /// The `RLIMIT_RTTIME` RTKit requires before it grants real-time: the
 /// process's limit, lowered to at most `max` microseconds. `None` when the
 /// current one already fits.
@@ -222,7 +314,33 @@ mod tests {
     #[test]
     fn a_stream_that_never_calls_back_lets_its_helper_go() {
         // The helper waits on the channel; dropping the promoter ends it.
-        let promoter = Promoter::start();
+        let promoter = Promoter::start(true, "hw:CARD=PCH,DEV=0");
         drop(promoter);
+    }
+
+    /// 0.10.0 regression: a callback on ALSA's `null` PCM never waits. Its
+    /// thread is not handed to RTKit (no helper, no D-Bus), the guard sees it
+    /// spin, and it stays at ordinary priority, so nothing can use up
+    /// `RLIMIT_RTTIME` and kill the test process.
+    #[test]
+    fn a_callback_that_never_waits_is_not_made_real_time() {
+        std::thread::spawn(|| {
+            let mut promoter = Promoter::start(false, "null");
+            assert!(
+                promoter.sender.is_none(),
+                "no helper for a device that may spin"
+            );
+            let started = Instant::now();
+            while started.elapsed() < plan::SPIN_WINDOW * 3 {
+                promoter.on_callback();
+            }
+            assert!(
+                promoter.spinning.load(Ordering::Acquire),
+                "the guard saw it spin"
+            );
+            assert!(!raised());
+        })
+        .join()
+        .expect("the spinning callback thread finishes");
     }
 }

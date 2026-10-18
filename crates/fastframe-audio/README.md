@@ -63,14 +63,21 @@ The callback runs ahead of ordinary work: on CoreAudio's real-time I/O
 thread on macOS, on the WASAPI thread in MMCSS on Windows (the output joins
 it as an "Audio" task), and on Linux on cpal's own thread, which the output
 asks RTKit to make real-time on its first callback (or, refused, to raise
-its nice level), as PipeWire does for its own threads. Without RTKit (a
-minimal system, a Flatpak sandbox) the thread keeps ordinary priority and
-the outcome is logged once.
+its nice level), as PipeWire does for its own threads. It does so only on
+devices that wait for the hardware, by cpal's own rule: cpal's PipeWire and
+PulseAudio hosts and ALSA's `hw` devices, not ALSA's `null` device, which
+never waits, nor its plugins. A callback thread that runs for most of 40 ms
+anyway takes back its raised priority itself, before the kernel's limit on
+real-time CPU time would end the process. Without RTKit (a minimal system,
+a Flatpak sandbox) the thread keeps ordinary priority and the outcome is
+logged once.
 
 `Clock::underruns()` counts the times the device played silence because the
 callback came too late, by the device's own timeline of when each block
 plays.
-The thread that decodes and queues what the renderer plays does not, so a
+
+The thread that decodes and queues what the renderer plays does not run
+ahead by itself, so a
 busy or swapping machine can keep it waiting longer than the queue lasts,
 and the callback plays silence: crackles and gaps that the device never
 reports (crmne/spotifast#785). Call `fastframe_audio::raise_feeder_priority()`

@@ -225,6 +225,72 @@ impl Timeline {
     }
 }
 
+/// Whether the callback thread of a stream on `device`, of the cpal host
+/// named `host`, waits for the device between callbacks, so that making it
+/// real-time cannot let it spin through the CPU time a real-time thread may
+/// use (`RLIMIT_RTTIME`), after which the kernel kills the process.
+///
+/// cpal's own rule (`is_rt_eligible`, ALSA) promotes only PCMs of the
+/// hardware types: not the `null` PCM, whose poll is always ready, nor the
+/// I/O and external plugins that may route to a sound server, nor the
+/// plugins that can chain to either. cpal keeps the PCM's type to itself, so
+/// this goes by the PCM's name: only `hw` PCMs. cpal's native PipeWire and
+/// PulseAudio hosts wait on the server's clock.
+// Only Linux promotes the callback thread (`realtime.rs`); the decision
+// stays pure and platform-independent so its tests run everywhere.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub(crate) fn realtime_eligible(host: &str, device: &str) -> bool {
+    match host {
+        "pipewire" | "pulseaudio" => true,
+        "alsa" => device == "hw" || device.starts_with("hw:"),
+        _ => false,
+    }
+}
+
+/// How long the spin guard looks at the callback thread at a time.
+// Only Linux promotes the callback thread (`realtime.rs`); the decision
+// stays pure and platform-independent so its tests run everywhere.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub(crate) const SPIN_WINDOW: Duration = Duration::from_millis(40);
+/// The share of a window's wall time a thread that waits for its device
+/// never comes near. A Kira or rodio render takes a few percent.
+// Only Linux promotes the callback thread (`realtime.rs`); the decision
+// stays pure and platform-independent so its tests run everywhere.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+const SPIN_BUSY: f64 = 0.8;
+
+/// Watches how busy the callback thread is, window by window, to notice one
+/// that never waits: a device that is always ready asks for audio again as
+/// soon as the callback returns.
+// Only Linux promotes the callback thread (`realtime.rs`); the decision
+// stays pure and platform-independent so its tests run everywhere.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct SpinWindow {
+    /// When the current window started, and the thread's CPU time then.
+    started: Option<(Instant, Duration)>,
+}
+
+// Only Linux promotes the callback thread (`realtime.rs`); the decision
+// stays pure and platform-independent so its tests run everywhere.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+impl SpinWindow {
+    /// Notes the thread's CPU time `cpu` at `now`; true when a window just
+    /// ended in which the thread ran for most of the time.
+    pub(crate) fn observe(&mut self, now: Instant, cpu: Duration) -> bool {
+        let Some((at, cpu_then)) = self.started else {
+            self.started = Some((now, cpu));
+            return false;
+        };
+        let wall = now.saturating_duration_since(at);
+        if wall < SPIN_WINDOW {
+            return false;
+        }
+        self.started = Some((now, cpu));
+        cpu.saturating_sub(cpu_then).as_secs_f64() >= SPIN_BUSY * wall.as_secs_f64()
+    }
+}
+
 /// How long a playing output may stand still before it counts as stuck: a
 /// few times the longest device buffer.
 pub(crate) const STALL: Duration = Duration::from_secs(2);
@@ -289,6 +355,50 @@ pub(crate) fn blocks(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_devices_that_wait_for_the_hardware_are_made_real_time() {
+        // The "Discard all samples" PCM is always ready: a real-time thread
+        // on it spins until the kernel kills the process.
+        assert!(!realtime_eligible("alsa", "null"));
+        // Plugins that may route to a sound server, or chain to one.
+        for device in [
+            "default",
+            "pulse",
+            "pipewire",
+            "plughw:CARD=PCH,DEV=0",
+            "dmix:0",
+        ] {
+            assert!(!realtime_eligible("alsa", device), "{device}");
+        }
+        assert!(realtime_eligible("alsa", "hw:CARD=PCH,DEV=0"));
+        assert!(realtime_eligible("alsa", "hw"));
+        assert!(!realtime_eligible("alsa", "hwplug"));
+        assert!(realtime_eligible(
+            "pipewire",
+            "alsa_output.pci-0000_00_1f.3"
+        ));
+        assert!(realtime_eligible("pulseaudio", "@DEFAULT_SINK@"));
+        // A host this does not know keeps its own scheduling.
+        assert!(!realtime_eligible("jack", "system"));
+    }
+
+    #[test]
+    fn a_callback_thread_that_never_waits_is_caught_within_a_window() {
+        let start = Instant::now();
+        let mut window = SpinWindow::default();
+        // Waits for the device: a few percent of each window.
+        assert!(!window.observe(start, Duration::ZERO));
+        let mut cpu = Duration::ZERO;
+        for step in 1..=10_u32 {
+            cpu += Duration::from_millis(1);
+            assert!(!window.observe(start + SPIN_WINDOW * step, cpu));
+        }
+        // Then never waits: busy for the whole of the next window.
+        let at = start + SPIN_WINDOW * 10;
+        assert!(!window.observe(at + SPIN_WINDOW / 2, cpu + SPIN_WINDOW / 2));
+        assert!(window.observe(at + SPIN_WINDOW, cpu + SPIN_WINDOW));
+    }
 
     #[test]
     fn the_timeline_counts_blocks_the_device_played_late() {

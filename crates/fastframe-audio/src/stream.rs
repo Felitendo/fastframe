@@ -156,6 +156,30 @@ pub(crate) fn open<R: Render>(
     Err(last_error.map_or(OpenError::NoDevice, OpenError::from))
 }
 
+/// Whether a stream on a device may run its callback in real time (see
+/// [`plan::realtime_eligible`]), and the device's cpal id, for the log.
+#[cfg(target_os = "linux")]
+pub(crate) struct Realtime {
+    pub(crate) eligible: bool,
+    pub(crate) device: String,
+}
+
+#[cfg(target_os = "linux")]
+impl Realtime {
+    fn of(device: &cpal::Device) -> Self {
+        match device.id() {
+            Ok(id) => Self {
+                eligible: plan::realtime_eligible(&id.host().to_string(), id.id()),
+                device: id.to_string(),
+            },
+            Err(_) => Self {
+                eligible: false,
+                device: "an unnamed device".to_owned(),
+            },
+        }
+    }
+}
+
 /// The device to open, and the default output's name when that is the one.
 fn pick(host: &cpal::Host, wanted: &Device) -> Result<(cpal::Device, Option<String>), OpenError> {
     let wanted = match wanted {
@@ -257,7 +281,10 @@ where
     let errors = Arc::clone(&shared);
     let mut timeline = plan::Timeline::default();
     #[cfg(target_os = "linux")]
-    let mut promoter = crate::realtime::Promoter::start();
+    let mut promoter = {
+        let realtime = Realtime::of(device);
+        crate::realtime::Promoter::start(realtime.eligible, &realtime.device)
+    };
     device.build_output_stream::<T, _, _>(
         *config,
         move |data: &mut [T], info: &cpal::OutputCallbackInfo| {
