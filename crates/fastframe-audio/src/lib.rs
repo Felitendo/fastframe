@@ -434,7 +434,9 @@ pub enum Reason {
     /// The stream failed or its device went away.
     Failed,
     /// The default device changed, and [`OutputOptions::follow_default`] or
-    /// [`InputOptions::follow_default`] is on.
+    /// [`InputOptions::follow_default`] is on; or, on PipeWire's default
+    /// input, which PipeWire moves to a new default source itself, the
+    /// default source changed, and the input reopened at its channels.
     DefaultChanged,
     /// [`Output::resume`] took back a device let go after a long pause, or
     /// [`Input::resume`] one let go after it failed while paused.
@@ -682,6 +684,12 @@ impl<C: Capture> Input<C> {
 
     /// Keeps the input on a working device, as [`Output::maintain`] does:
     /// call it now and then on the thread that owns the input.
+    ///
+    /// On PipeWire's default input it also reopens the input when the
+    /// default source changes, so it captures at the new source's own
+    /// channels ([`Maintained::Reopened`] with [`Reason::DefaultChanged`]).
+    /// That reopen asks PipeWire's PulseAudio server for the new source's
+    /// channels, as [`open`](Self::open) does.
     pub fn maintain(&mut self) -> Maintained {
         self.session.maintain()
     }

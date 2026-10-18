@@ -94,6 +94,12 @@ pub(crate) struct Shared {
     /// Counts resumes, each of which may have given the renderer something
     /// to play, so an idle mark from a render before it is stale.
     pub(crate) wakes: std::sync::atomic::AtomicU64,
+    /// The stream reopens when its default moves to another device (see
+    /// [`plan::reopens_when_default_moves`]).
+    pub(crate) follows_moves: AtomicBool,
+    /// cpal reported that the default the stream is on moved, and it
+    /// follows moves: reopen it.
+    pub(crate) default_moved: AtomicBool,
 }
 
 impl Shared {
@@ -105,13 +111,20 @@ impl Shared {
             epoch: std::sync::atomic::AtomicU64::new(0),
             idle: std::sync::atomic::AtomicU64::new(0),
             wakes: std::sync::atomic::AtomicU64::new(0),
+            follows_moves: AtomicBool::new(false),
+            default_moved: AtomicBool::new(false),
         }
     }
 
     pub(crate) fn report(&self, error: cpal::Error) {
         let reopen = plan::needs_reopen(error.kind());
+        let kind = error.kind();
         let error = OutputError::from_cpal(&error);
         let direction = self.direction.label();
+        if kind == cpal::ErrorKind::DeviceChanged && self.follows_moves.load(Ordering::Acquire) {
+            log::info!("audio {direction}: the default moved; reopening at its channels");
+            self.default_moved.store(true, Ordering::Release);
+        }
         if reopen {
             log::warn!("audio {direction} error, reopening: {error}");
             self.failed.store(true, Ordering::Release);

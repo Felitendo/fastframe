@@ -8,7 +8,9 @@
 //! an input by an id from the `devices` example instead of the default,
 //! `--name <name>` by its name, and `--channels <n>` asks for that many
 //! channels instead of the device's own. The loudest sample is shown for
-//! each channel (the first eight).
+//! each channel (the first eight). `--watch <seconds>` instead captures for
+//! that long, reporting each second and calling `maintain()` before each
+//! report, to show the input following a new default.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU16, AtomicU32, AtomicU64, Ordering};
@@ -137,6 +139,25 @@ fn main() -> Result<(), fastframe_audio::OpenError> {
             clock.latency()
         );
     };
+    let watch = args
+        .iter()
+        .position(|arg| arg == "--watch")
+        .and_then(|at| args.get(at + 1))
+        .and_then(|seconds| seconds.parse::<u32>().ok());
+    if let Some(seconds) = watch {
+        for _ in 0..seconds {
+            match input.maintain() {
+                fastframe_audio::Maintained::Unchanged => {}
+                maintained => println!(
+                    "maintain: {maintained:?}, now {} at {} channels",
+                    input.device_id(),
+                    input.channels()
+                ),
+            }
+            report("capturing");
+        }
+        return Ok(());
+    }
     report("capturing");
     input.pause();
     std::thread::sleep(Duration::from_millis(200));

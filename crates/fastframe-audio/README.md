@@ -158,10 +158,17 @@ allocating on the audio thread:
 `Capture::configure`, `Input::channels()` and `Reopened` give the channels
 the capturer gets. cpal's PipeWire host links a stream's channels to the
 source's one to one without mixing, so a stereo stream on a mono
-microphone had its right channel silent. cpal's PipeWire default input
-says two channels whatever the source, so opening the default asks
-PipeWire's PulseAudio server how many its default source has (about
-6 ms), and `device_id()` then needs no second asking.
+microphone had its right channel silent.
+
+cpal's PipeWire default input says two channels whatever the source, so
+opening the default asks PipeWire's PulseAudio server how many its default
+source has (about 6 ms), and `device_id()` then needs no second asking.
+When the default
+source changes, PipeWire moves the stream there at the channels it opened
+with, so the next `maintain()` reopens it at the new source's own and
+returns `Reopened` with `DefaultChanged`; that reopen asks the server
+again. Until then (up to the time between two `maintain()` calls) the
+capturer gets the new source at the old channels.
 
 Its `Clock` counts what was handed to the capturer, `latency()` is how long
 before the callback the device captured it, and `underruns()` counts the
@@ -337,7 +344,8 @@ output pausing itself after each.
 `cargo run -p fastframe-audio --example capture` opens the default input,
 measures what it captures (how many samples, the loudest in each channel)
 and drops it, capturing, paused and resumed; `-- --channels 2` asks for
-two channels. Nothing is saved or sent. `--example devices`
+two channels, and `-- --watch 10` captures for ten seconds, calling
+`maintain()` each second, to show it following a new default source. Nothing is saved or sent. `--example devices`
 lists the outputs and inputs with their ids, and `-- --device <id>` opens
 one in `idle` or `capture`.
 

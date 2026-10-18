@@ -162,6 +162,16 @@ pub(crate) fn source_channels(
     }
 }
 
+/// Whether a stream reopens when cpal reports that the default it is on
+/// moved to another device: an input on cpal's PipeWire default, which
+/// PipeWire moves to the new default source without a reopen, at the
+/// channels it opened with (see [`source_channels`]). Reopening opens it at
+/// the new source's own. An output's renderer fills what the sink takes, and
+/// other hosts open a device of their own, which does not move.
+pub(crate) fn reopens_when_default_moves(direction: Direction, host: &str, id: &str) -> bool {
+    direction == Direction::Input && is_pipewire_default(host, id)
+}
+
 /// The channels the app's renderer or capturer works in on a stream opened
 /// at `opened`: an output's renderer fills the stream's, and an input's
 /// capturer takes what the app `asked` for, or the stream's when it asked
@@ -1168,6 +1178,30 @@ mod tests {
         assert_eq!(source_channels("alsa", "hw:CARD=FLOW8,DEV=0", 4, never), 4);
         // An output's renderer fills what the stream opened at.
         assert_eq!(engine_channels(Direction::Output, 2, 6), 6);
+    }
+
+    #[test]
+    fn only_an_input_on_pipewires_default_reopens_when_the_default_moves() {
+        assert!(reopens_when_default_moves(
+            Direction::Input,
+            "pipewire",
+            "input_default"
+        ));
+        assert!(!reopens_when_default_moves(
+            Direction::Output,
+            "pipewire",
+            "output_default"
+        ));
+        assert!(!reopens_when_default_moves(
+            Direction::Input,
+            "pipewire",
+            "alsa_input.usb-Behringer_FLOW_8.Recording__Mic1__source"
+        ));
+        assert!(!reopens_when_default_moves(
+            Direction::Input,
+            "pulseaudio",
+            "input_default"
+        ));
     }
 
     #[test]

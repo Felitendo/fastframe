@@ -68,6 +68,10 @@ impl<E: Engine> Session<E> {
         let shared = Arc::new(Shared::new(E::DIRECTION));
         let clock = Clock::default();
         let live = opener(&settings, &engine, &clock, &shared, false)?;
+        shared.follows_moves.store(
+            plan::reopens_when_default_moves(E::DIRECTION, &live.host, &live.own_id),
+            Ordering::Release,
+        );
         let watch = (settings.follow_default
             && settings.device == Device::Default
             && cfg!(any(target_os = "macos", windows)))
@@ -181,11 +185,12 @@ impl<E: Engine> Session<E> {
                 self.device
             );
             self.live = None;
+            self.shared.default_moved.store(false, Ordering::Release);
             return Maintained::Released;
         }
         let reason = if self.shared.failed.load(Ordering::Acquire) {
             Some(Reason::Failed)
-        } else if self.default_changed() {
+        } else if self.default_changed() || self.shared.default_moved.load(Ordering::Acquire) {
             Some(Reason::DefaultChanged)
         } else if self.live.is_none() && !self.paused {
             Some(Reason::Failed)
@@ -207,6 +212,7 @@ impl<E: Engine> Session<E> {
             // on resume.
             self.live = None;
             self.shared.failed.store(false, Ordering::Release);
+            self.shared.default_moved.store(false, Ordering::Release);
             return Maintained::Released;
         }
         match self.reopen() {
@@ -269,6 +275,11 @@ impl<E: Engine> Session<E> {
         ) {
             Ok(live) => {
                 self.shared.failed.store(false, Ordering::Release);
+                self.shared.default_moved.store(false, Ordering::Release);
+                self.shared.follows_moves.store(
+                    plan::reopens_when_default_moves(E::DIRECTION, &live.host, &live.own_id),
+                    Ordering::Release,
+                );
                 self.stall = plan::Stall::new(self.clock.played(), Instant::now());
                 self.device = live.device.clone();
                 self.own_id = live.own_id.clone();
@@ -345,16 +356,39 @@ mod tests {
         }
     }
 
+    /// A capturer that captures nothing.
+    #[derive(Default)]
+    struct Captureless;
+
+    impl Engine for Captureless {
+        const DIRECTION: Direction = Direction::Input;
+
+        fn configure(&mut self, _sample_rate: u32, _channels: u16) {}
+
+        fn build(
+            _: &cpal::Device,
+            _: &cpal::StreamConfig,
+            _: cpal::SampleFormat,
+            _: Arc<Mutex<Self>>,
+            _: Callback,
+        ) -> Result<cpal::Stream, cpal::Error> {
+            unreachable!("the stand-in opener builds no stream")
+        }
+    }
+
     thread_local! {
+        /// The host and own id the stand-in opener reports, when not its
+        /// own fake ones.
+        static ON: Cell<Option<(&'static str, &'static str)>> = const { Cell::new(None) };
         /// The streams this test's opener opened, in order.
         static OPENED: RefCell<Vec<Arc<FakeStream>>> = const { RefCell::new(Vec::new()) };
         /// Whether the next open fails.
         static REFUSE: Cell<bool> = const { Cell::new(false) };
     }
 
-    fn fake_open(
+    fn fake_open<E: Engine>(
         _: &Settings,
-        engine: &Arc<Mutex<Engineless>>,
+        engine: &Arc<Mutex<E>>,
         clock: &Clock,
         _: &Arc<Shared>,
         paused: bool,
@@ -376,8 +410,10 @@ mod tests {
         Ok(Live {
             stream: Handle::Fake(stream),
             device: "Fake".into(),
-            own_id: format!("fake-{count}"),
-            host: "fake".into(),
+            own_id: ON
+                .get()
+                .map_or_else(|| format!("fake-{count}"), |(_, id)| id.to_owned()),
+            host: ON.get().map_or("fake", |(host, _)| host).into(),
             sample_rate: 48_000,
             channels: 2,
             default_at_open: None,
@@ -458,6 +494,43 @@ mod tests {
         );
         assert_eq!(session.maintain(), Maintained::Unchanged);
         assert_eq!(session.device_id().as_str(), "fake-2", "the new stream's");
+    }
+
+    #[test]
+    fn an_input_on_pipewires_default_reopens_when_the_default_moves() {
+        ON.set(Some(("pipewire", "input_default")));
+        let mut session =
+            Session::open_with(settings(), Captureless, fake_open).expect("the stand-in opens");
+        let moved = || cpal::Error::with_message(cpal::ErrorKind::DeviceChanged, "moved");
+        session.shared.report(moved());
+        assert_eq!(
+            session.maintain(),
+            Maintained::Reopened {
+                device: "Fake".into(),
+                sample_rate: 48_000,
+                channels: 2,
+                reason: Reason::DefaultChanged,
+            }
+        );
+        assert_eq!(session.maintain(), Maintained::Unchanged, "once per move");
+        assert_eq!(OPENED.with_borrow(Vec::len), 2);
+        assert_eq!(session.take_errors().len(), 1, "still reported to the app");
+
+        // Paused, the device is let go once, and resume opens the new one.
+        session.pause();
+        session.shared.report(moved());
+        assert_eq!(session.maintain(), Maintained::Released);
+        assert_eq!(session.maintain(), Maintained::Unchanged);
+        session.resume();
+        assert_eq!(OPENED.with_borrow(Vec::len), 3);
+
+        // An output on PipeWire's default carries on: its stream moved.
+        ON.set(Some(("pipewire", "output_default")));
+        let mut output = open(settings());
+        output.shared.report(moved());
+        assert_eq!(output.maintain(), Maintained::Unchanged);
+        assert_eq!(OPENED.with_borrow(Vec::len), 4);
+        ON.set(None);
     }
 
     #[test]
