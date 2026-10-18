@@ -5,13 +5,14 @@
 //! By default it opens the output as Solco does (512 frames, rendered in
 //! blocks of at most 512). `--buffer-ms 100` asks for a fixed 100 ms buffer
 //! instead, as Spotifast does on Windows, without blocks, so the largest
-//! callback shows the buffer the device gave.
+//! callback shows the buffer the device gave. `--device <id>` opens a
+//! device by an id from the `devices` example instead of the default.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-use fastframe_audio::{Buffer, BufferSize, Output, OutputOptions, Render};
+use fastframe_audio::{Buffer, BufferSize, Device, DeviceId, Output, OutputOptions, Render};
 
 #[derive(Default)]
 struct Stats {
@@ -45,12 +46,19 @@ fn main() -> Result<(), fastframe_audio::OpenError> {
         .position(|arg| arg == "--buffer-ms")
         .and_then(|at| args.get(at + 1))
         .and_then(|ms| ms.parse::<u64>().ok());
+    let device = args
+        .iter()
+        .position(|arg| arg == "--device")
+        .and_then(|at| args.get(at + 1))
+        .map_or(Device::Default, |id| Device::Id(DeviceId::new(id.as_str())));
     let options = match buffer_ms {
         Some(ms) => OutputOptions {
+            device,
             buffer: Buffer::Fixed(BufferSize::Duration(Duration::from_millis(ms))),
             ..OutputOptions::default()
         },
         None => OutputOptions {
+            device,
             buffer: Buffer::Fixed(BufferSize::Frames(512)),
             max_block_frames: Some(512),
             ..OutputOptions::default()
@@ -65,10 +73,12 @@ fn main() -> Result<(), fastframe_audio::OpenError> {
     let mut output = Output::open(options, renderer)?;
     let clock = output.clock();
     println!(
-        "{} at {} Hz, {} channels",
+        "{} ({}) at {} Hz, {} channels, through {}",
         output.device_name(),
+        output.device_id(),
         output.sample_rate(),
-        output.channels()
+        output.channels(),
+        fastframe_audio::host()
     );
 
     let report = |what: &str| {

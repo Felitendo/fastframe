@@ -57,6 +57,38 @@ through the output, so nothing the app does can make the callback wait. It
 stays the same across pauses and reopens, so what is playing carries on from
 the same sample.
 
+## Devices
+
+`output_devices()` and `input_devices()` list what a device picker can
+offer, each a `DeviceInfo` with an `id`, a `name` and whether it
+`is_default`. Nothing is opened. Save the id (`DeviceId::as_str`) and open
+the device by it later with `Device::Id(DeviceId::new(saved))`: it stays
+the same when the device is renamed or the list changes order, and tells
+apart two devices with the same name. It is the system's own id for the
+device, without the system's name:
+
+| System | Id | Example |
+| --- | --- | --- |
+| PipeWire | the node's `node.name` | `alsa_output.pci-0000_00_1f.3.analog-stereo` |
+| PulseAudio | the sink or source name (under `pipewire-pulse`, the same `node.name`) | `alsa_output.pci-0000_00_1f.3.analog-stereo` |
+| ALSA | the PCM name | `hw:CARD=PCH,DEV=0` |
+| WASAPI | the endpoint id | `{0.0.0.00000000}.{guid}` |
+| CoreAudio | the device's UID | `BuiltInSpeakerDevice` |
+
+A saved id that matches nothing (the device is unplugged, or the settings
+came from another machine) opens the default device, with a warning in the
+log. A device is matched by its id for `Device::Id` and by its name for
+`Device::Named`, never one for the other. `device_id()` gives the id of
+the device a stream opened on; after `maintain()` returns `Reopened`, it
+gives the new device's.
+
+The listings leave out what is not a device of its own: cpal's PipeWire
+default devices (`Device::Default` stands for them) and other apps' playback
+streams, the monitors of outputs among the inputs, and ALSA's `null`
+device. On PipeWire the default is found through its PulseAudio server; a
+system without one marks no device the default. `output_device_names()`
+still returns every name cpal lists, as before.
+
 ## The feeding thread
 
 The callback runs ahead of ordinary work: on CoreAudio's real-time I/O
@@ -98,9 +130,10 @@ it from a thread pool shared with other work.
 
 `OutputOptions` (all have defaults):
 
-- `device`: `Device::Default`, or `Device::Named(name)` from
-  `output_device_names()`. Only that device is ever opened; a named device
-  that is missing falls back to the default, with a warning in the log.
+- `device`: `Device::Default`, `Device::Id(id)` from `output_devices()`, or
+  `Device::Named(name)` from `output_device_names()`. Only that device is
+  ever opened; one that is missing falls back to the default, with a
+  warning in the log.
 - `channels`: `2` by default; `0` takes the device's own.
 - `sample_rate`: a rate to try first, such as Spotify's 44.1 kHz; by default
   the device's own rate.

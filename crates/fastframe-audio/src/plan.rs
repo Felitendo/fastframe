@@ -82,42 +82,141 @@ pub(crate) fn buffer_frames(size: BufferSize, sample_rate: u32, range: Option<(u
     }
 }
 
-/// The device to open, given the output device names and the one the app
-/// asked for. A name that is not there falls back to the default output.
+/// Which way a stream goes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Direction {
+    /// To the device: an [`Output`](crate::Output).
+    Output,
+    /// From the device: an [`Input`](crate::Input).
+    Input,
+}
+
+impl Direction {
+    /// The word for the log and for errors: "output" or "input".
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::Output => "output",
+            Self::Input => "input",
+        }
+    }
+}
+
+/// A device as cpal lists it: its host-less id and its name, either of which
+/// a device that is going away can fail to give, and which ways it can play.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Listed {
+    pub(crate) id: Option<String>,
+    pub(crate) name: Option<String>,
+    pub(crate) input: bool,
+    pub(crate) output: bool,
+}
+
+impl Listed {
+    fn goes(&self, direction: Direction) -> bool {
+        match direction {
+            Direction::Output => self.output,
+            Direction::Input => self.input,
+        }
+    }
+}
+
+/// The device to open, among the listed ones.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Choice {
-    /// The named device, at this position in the list.
-    Named(usize),
-    /// The default output: none was named, or the named one is missing.
+    /// The device asked for, at this position in the list.
+    Listed(usize),
+    /// The default device: none was asked for, or the one asked for is
+    /// missing.
     Default {
-        /// The name asked for, when it was missing.
+        /// What was asked for, for the log, when it was missing.
         missing: Option<String>,
     },
 }
 
-/// The devices that can be named, with their names at the same indexes. A
-/// device that cannot be named (it is going away) is left out, so an index
-/// from [`choose`] over the names finds its device.
-pub(crate) fn named<D>(
-    devices: impl IntoIterator<Item = D>,
-    name: impl Fn(&D) -> Option<String>,
-) -> (Vec<String>, Vec<D>) {
-    devices
-        .into_iter()
-        .filter_map(|device| Some((name(&device)?, device)))
-        .unzip()
-}
-
-pub(crate) fn choose(names: &[String], wanted: Option<&str>) -> Choice {
-    match wanted.map(str::trim).filter(|name| !name.is_empty()) {
-        None => Choice::Default { missing: None },
-        Some(wanted) => match names.iter().position(|name| name == wanted) {
-            Some(index) => Choice::Named(index),
-            None => Choice::Default {
-                missing: Some(wanted.to_owned()),
-            },
+/// Finds the device the app asked for among `listed`, in `direction`: by its
+/// id for [`Device::Id`](crate::Device::Id), by its name for
+/// [`Device::Named`](crate::Device::Named), and otherwise, or when it is not
+/// there, the default device. An empty id or name asks for the default. A
+/// device that cannot give its id or name is never matched by it.
+pub(crate) fn choose(listed: &[Listed], wanted: &crate::Device, direction: Direction) -> Choice {
+    let (by_id, wanted) = match wanted {
+        crate::Device::Default => return Choice::Default { missing: None },
+        crate::Device::Id(id) => (true, id.as_str()),
+        crate::Device::Named(name) => (false, name.as_str()),
+    };
+    let wanted = wanted.trim();
+    if wanted.is_empty() {
+        return Choice::Default { missing: None };
+    }
+    let key = |device: &Listed| {
+        if by_id {
+            device.id.clone()
+        } else {
+            device.name.clone()
+        }
+    };
+    let describe = if by_id { "id" } else { "name" };
+    match listed
+        .iter()
+        .position(|device| device.goes(direction) && key(device).as_deref() == Some(wanted))
+    {
+        Some(index) => Choice::Listed(index),
+        None => Choice::Default {
+            missing: Some(format!("{describe} {wanted:?}")),
         },
     }
+}
+
+/// cpal's PipeWire host lists three devices of its own that follow the
+/// server's default: the default output, the default input, and the default
+/// output's monitor.
+pub(crate) const PIPEWIRE_DEFAULTS: [&str; 3] = ["output_default", "input_default", "sink_default"];
+
+/// Whether `id` is one of the PipeWire host's default devices rather than a
+/// device of its own.
+pub(crate) fn is_pipewire_default(host: &str, id: &str) -> bool {
+    host == "pipewire" && PIPEWIRE_DEFAULTS.contains(&id)
+}
+
+/// The positions in `listed` of the devices a picker offers in `direction`
+/// on the cpal host named `host`: those that have an id and a name, without
+/// what a picker should not offer.
+///
+/// - PipeWire: not its default devices, which `Device::Default` stands for.
+///   cpal lists a sink as duplex, because its monitor can be captured, and
+///   other apps' playback streams as outputs only, so an output is a duplex
+///   node, and an input is a node that only captures: not a sink's monitor.
+/// - PulseAudio: not a sink's monitor, the source named after the sink with
+///   `.monitor`.
+/// - ALSA: not the `null` device, which discards what it plays and captures
+///   silence.
+pub(crate) fn listable(host: &str, direction: Direction, listed: &[Listed]) -> Vec<usize> {
+    let sinks: Vec<&str> = listed
+        .iter()
+        .filter(|device| device.output)
+        .filter_map(|device| device.id.as_deref())
+        .collect();
+    listed
+        .iter()
+        .enumerate()
+        .filter(|(_, device)| device.goes(direction) && device.name.is_some())
+        .filter(|(_, device)| {
+            let Some(id) = device.id.as_deref() else {
+                return false;
+            };
+            match (host, direction) {
+                ("pipewire", _) if is_pipewire_default(host, id) => false,
+                ("pipewire", Direction::Output) => device.input,
+                ("pipewire", Direction::Input) => !device.output,
+                ("pulseaudio", Direction::Input) => id
+                    .strip_suffix(".monitor")
+                    .is_none_or(|sink| !sinks.contains(&sink)),
+                ("alsa", _) => id != "null",
+                _ => true,
+            }
+        })
+        .map(|(index, _)| index)
+        .collect()
 }
 
 /// The device to open for the default output: the endpoint that is the
@@ -451,17 +550,155 @@ mod tests {
         );
     }
 
+    fn listed(id: &str, name: &str, input: bool, output: bool) -> Listed {
+        Listed {
+            id: Some(id.to_owned()),
+            name: Some(name.to_owned()),
+            input,
+            output,
+        }
+    }
+
     #[test]
-    fn a_device_that_cannot_be_named_is_left_out_and_the_rest_keep_their_names() {
-        // cpal cannot name a device that is going away. Its id 2 stands for
-        // one here.
-        let (names, devices) = named([1, 2, 3], |id| (*id != 2).then(|| format!("output {id}")));
-        assert_eq!(names, ["output 1", "output 3"]);
-        assert_eq!(devices, [1, 3]);
-        let Choice::Named(index) = choose(&names, Some("output 3")) else {
-            panic!("output 3 is there");
-        };
-        assert_eq!(devices[index], 3);
+    fn a_device_is_found_by_its_id_then_by_its_name() {
+        use crate::{Device, DeviceId};
+        let devices = [
+            listed("alsa_output.pci", "Speakers", true, true),
+            listed("alsa_output.usb", "USB DAC", true, true),
+            listed("alsa_input.usb", "USB DAC", true, false),
+        ];
+        let out = Direction::Output;
+        let id = |id: &str| Device::Id(DeviceId::new(id));
+        assert_eq!(
+            choose(&devices, &id("alsa_output.usb"), out),
+            Choice::Listed(1)
+        );
+        // Two devices share the name; the direction tells them apart.
+        let named = Device::Named("USB DAC".into());
+        assert_eq!(choose(&devices, &named, out), Choice::Listed(1));
+        assert_eq!(
+            choose(&devices, &named, Direction::Input),
+            Choice::Listed(1)
+        );
+        assert_eq!(
+            choose(&devices, &id("alsa_input.usb"), Direction::Input),
+            Choice::Listed(2)
+        );
+        // An id is never matched by name, nor a name by id.
+        assert_eq!(
+            choose(&devices, &id("Speakers"), out),
+            Choice::Default {
+                missing: Some("id \"Speakers\"".into())
+            }
+        );
+        assert_eq!(
+            choose(&devices, &Device::Named("alsa_output.pci".into()), out),
+            Choice::Default {
+                missing: Some("name \"alsa_output.pci\"".into())
+            }
+        );
+        // An input's id does not open it as an output.
+        assert!(matches!(
+            choose(&devices, &id("alsa_input.usb"), out),
+            Choice::Default { missing: Some(_) }
+        ));
+    }
+
+    #[test]
+    fn a_missing_device_falls_back_to_the_default() {
+        use crate::{Device, DeviceId};
+        let devices = [listed("a", "Speakers", false, true)];
+        let out = Direction::Output;
+        assert_eq!(
+            choose(&devices, &Device::Default, out),
+            Choice::Default { missing: None }
+        );
+        for blank in [Device::Named("  ".into()), Device::Id(DeviceId::new(""))] {
+            assert_eq!(
+                choose(&devices, &blank, out),
+                Choice::Default { missing: None }
+            );
+        }
+        assert_eq!(
+            choose(&devices, &Device::Named("Headphones".into()), out),
+            Choice::Default {
+                missing: Some("name \"Headphones\"".into())
+            }
+        );
+    }
+
+    #[test]
+    fn a_device_that_cannot_name_itself_is_matched_only_by_its_id() {
+        use crate::{Device, DeviceId};
+        // cpal cannot describe a device that is going away.
+        let devices = [
+            Listed {
+                id: Some("b".into()),
+                name: None,
+                input: false,
+                output: true,
+            },
+            listed("c", "output 3", false, true),
+        ];
+        let out = Direction::Output;
+        assert_eq!(
+            choose(&devices, &Device::Named("output 3".into()), out),
+            Choice::Listed(1)
+        );
+        assert_eq!(
+            choose(&devices, &Device::Id(DeviceId::new("b")), out),
+            Choice::Listed(0)
+        );
+        // A picker leaves it out until it can be named.
+        assert_eq!(listable("coreaudio", out, &devices), [1]);
+    }
+
+    #[test]
+    fn pipewire_pickers_offer_sinks_and_sources_only() {
+        // As cpal 0.18 lists them on PipeWire.
+        let devices = [
+            listed("sink_default", "default_sink", true, true),
+            listed("input_default", "default_input", true, false),
+            listed("output_default", "default_output", false, true),
+            // Another app's playback stream.
+            listed("alsa_playback.voxtype", "ALSA Playback", false, true),
+            listed("alsa_output.pci.hdmi-stereo", "HDMI", true, true),
+            listed("alsa_input.usb.mic", "Mic", true, false),
+        ];
+        assert_eq!(listable("pipewire", Direction::Output, &devices), [4]);
+        assert_eq!(listable("pipewire", Direction::Input, &devices), [5]);
+        assert!(is_pipewire_default("pipewire", "output_default"));
+        assert!(!is_pipewire_default("pulseaudio", "output_default"));
+    }
+
+    #[test]
+    fn pulseaudio_inputs_leave_out_the_sinks_monitors() {
+        let devices = [
+            listed("alsa_output.hdmi", "HDMI", false, true),
+            listed("alsa_output.hdmi.monitor", "Monitor of HDMI", true, false),
+            listed("alsa_input.mic", "Mic", true, false),
+            // Not the monitor of any sink listed.
+            listed("loopback.monitor", "Loopback", true, false),
+        ];
+        assert_eq!(listable("pulseaudio", Direction::Output, &devices), [0]);
+        assert_eq!(listable("pulseaudio", Direction::Input, &devices), [2, 3]);
+    }
+
+    #[test]
+    fn alsa_pickers_leave_out_the_null_device() {
+        let devices = [
+            listed("null", "Discard all samples", true, true),
+            listed("default", "Default ALSA Output", true, true),
+            listed("hw:CARD=PCH,DEV=0", "HDA Intel PCH", true, true),
+            listed("hdmi:CARD=NVidia,DEV=0", "HDA NVidia", false, true),
+        ];
+        assert_eq!(listable("alsa", Direction::Output, &devices), [1, 2, 3]);
+        assert_eq!(listable("alsa", Direction::Input, &devices), [1, 2]);
+        // WASAPI and CoreAudio list their endpoints as they are.
+        assert_eq!(
+            listable("wasapi", Direction::Output, &devices),
+            [0, 1, 2, 3]
+        );
     }
 
     #[test]
@@ -581,23 +818,6 @@ mod tests {
             512
         );
         assert_eq!(buffer_frames(BufferSize::Frames(0), 44_100, None), 1);
-    }
-
-    #[test]
-    fn a_missing_named_device_falls_back_to_the_default() {
-        let names = ["Speakers".to_owned(), "USB DAC".to_owned()];
-        assert_eq!(choose(&names, Some("USB DAC")), Choice::Named(1));
-        assert_eq!(choose(&names, None), Choice::Default { missing: None });
-        assert_eq!(
-            choose(&names, Some("  ")),
-            Choice::Default { missing: None }
-        );
-        assert_eq!(
-            choose(&names, Some("Headphones")),
-            Choice::Default {
-                missing: Some("Headphones".into())
-            }
-        );
     }
 
     #[test]

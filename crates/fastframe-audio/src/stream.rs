@@ -7,8 +7,8 @@ use std::time::Duration;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 
-use crate::plan::{self, Attempt, Choice};
-use crate::{Clock, Device, OpenError, OutputError, OutputOptions, Render};
+use crate::plan::{self, Attempt, Choice, Direction};
+use crate::{Clock, Device, DeviceId, DeviceInfo, OpenError, OutputError, OutputOptions, Render};
 
 /// The audio system this process chose, the first time it asked.
 ///
@@ -80,9 +80,10 @@ impl Shared {
 pub(crate) struct Live {
     pub(crate) stream: cpal::Stream,
     pub(crate) device: String,
+    pub(crate) id: DeviceId,
     pub(crate) sample_rate: u32,
     pub(crate) channels: u16,
-    /// The default output's name when this stream opened on it, for noticing
+    /// The default device's id when this stream opened on it, for noticing
     /// that the default changed.
     pub(crate) default_at_open: Option<String>,
 }
@@ -101,8 +102,9 @@ pub(crate) fn open<R: Render>(
     paused: bool,
 ) -> Result<Live, OpenError> {
     let host = host();
-    let (device, default_at_open) = pick(&host, &options.device)?;
+    let (device, default_at_open) = pick(&host, &options.device, Direction::Output)?;
     let name = device_name(&device).map_err(OpenError::from)?;
+    let id = reported_id(&host, &device, Direction::Output);
     let default = device.default_output_config().map_err(OpenError::from)?;
     let format = default.sample_format();
     let range = match *default.buffer_size() {
@@ -189,6 +191,7 @@ pub(crate) fn open<R: Render>(
                 return Ok(Live {
                     stream,
                     device: name,
+                    id,
                     sample_rate: attempt.sample_rate,
                     channels,
                     default_at_open,
@@ -227,19 +230,17 @@ impl Realtime {
     }
 }
 
-/// The device to open, and the default output's name when that is the one.
-fn pick(host: &cpal::Host, wanted: &Device) -> Result<(cpal::Device, Option<String>), OpenError> {
-    let wanted = match wanted {
-        Device::Default => None,
-        Device::Named(name) => Some(name.as_str()),
-    };
-    if wanted.is_some() {
-        let (names, devices) =
-            plan::named(host.output_devices().map_err(OpenError::from)?, |device| {
-                device_name(device).ok()
-            });
-        match plan::choose(&names, wanted) {
-            Choice::Named(index) => {
+/// The device to open, and the default device's id when that is the one.
+fn pick(
+    host: &cpal::Host,
+    wanted: &Device,
+    direction: Direction,
+) -> Result<(cpal::Device, Option<String>), OpenError> {
+    if *wanted != Device::Default {
+        let devices: Vec<cpal::Device> = host.devices().map_err(OpenError::from)?.collect();
+        let listed: Vec<plan::Listed> = devices.iter().map(listed).collect();
+        match plan::choose(&listed, wanted, direction) {
+            Choice::Listed(index) => {
                 if let Some(device) = devices.into_iter().nth(index) {
                     return Ok((device, None));
                 }
@@ -247,23 +248,122 @@ fn pick(host: &cpal::Host, wanted: &Device) -> Result<(cpal::Device, Option<Stri
             Choice::Default { missing } => {
                 if let Some(missing) = missing {
                     log::warn!(
-                        "audio device {missing:?} is not available; using the default output"
+                        "audio device with {missing} is not available; using the default {}",
+                        direction.label()
                     );
                 }
             }
         }
     }
-    let device = host.default_output_device().ok_or(OpenError::NoDevice)?;
+    let device = default_device(host, direction).ok_or(OpenError::NoDevice)?;
     #[cfg(windows)]
-    let device = match host.output_devices() {
-        Ok(listed) => plan::concrete_default(device, listed, |device| device.id().ok()),
+    let device = match host.devices() {
+        Ok(listed) => plan::concrete_default(
+            device,
+            listed.filter(|device| goes(device, direction)),
+            |device| device.id().ok(),
+        ),
         Err(error) => {
-            log::debug!("audio output: cannot list the outputs to open the default's: {error}");
+            log::debug!(
+                "audio {}: cannot list the devices to open the default's: {error}",
+                direction.label()
+            );
             device
         }
     };
-    let name = device_name(&device).map_err(OpenError::from)?;
-    Ok((device, Some(name)))
+    let id = own_id(&device);
+    Ok((device, Some(id)))
+}
+
+/// The system's default device in `direction`.
+fn default_device(host: &cpal::Host, direction: Direction) -> Option<cpal::Device> {
+    match direction {
+        Direction::Output => host.default_output_device(),
+        Direction::Input => host.default_input_device(),
+    }
+}
+
+/// Whether the device plays or captures, as `direction` asks.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn goes(device: &cpal::Device, direction: Direction) -> bool {
+    match direction {
+        Direction::Output => device.supports_output(),
+        Direction::Input => device.supports_input(),
+    }
+}
+
+/// The device's id without its host, or an empty one (which opens the
+/// default) when it cannot say.
+fn own_id(device: &cpal::Device) -> String {
+    device.id().map(|id| id.id().to_owned()).unwrap_or_default()
+}
+
+/// What choosing and listing need to know of a device.
+fn listed(device: &cpal::Device) -> plan::Listed {
+    plan::Listed {
+        id: device.id().ok().map(|id| id.id().to_owned()),
+        name: device_name(device).ok(),
+        input: device.supports_input(),
+        output: device.supports_output(),
+    }
+}
+
+/// The id of the device behind cpal's PipeWire default devices, which name
+/// none: PipeWire's PulseAudio server's default sink or source. `None`
+/// without that server, or on other hosts, which open a device of their own.
+fn server_default(host: &cpal::Host, direction: Direction) -> Option<String> {
+    #[cfg(target_os = "linux")]
+    if host.id() == cpal::HostId::PipeWire
+        && cpal::available_hosts().contains(&cpal::HostId::PulseAudio)
+    {
+        let pulse = cpal::host_from_id(cpal::HostId::PulseAudio).ok()?;
+        return default_device(&pulse, direction).map(|device| own_id(&device));
+    }
+    let _ = (host, direction);
+    None
+}
+
+/// The id to report for an opened device: its own, or for a PipeWire
+/// default device the device it stands for just now, when that can be found.
+fn reported_id(host: &cpal::Host, device: &cpal::Device, direction: Direction) -> DeviceId {
+    let id = own_id(device);
+    if plan::is_pipewire_default(&host.id().to_string(), &id)
+        && let Some(server) = server_default(host, direction)
+    {
+        return DeviceId::new(server);
+    }
+    DeviceId::new(id)
+}
+
+/// The devices a picker can offer in `direction` (see [`plan::listable`]).
+pub(crate) fn devices(direction: Direction) -> Result<Vec<DeviceInfo>, OpenError> {
+    let host = host();
+    let listed: Vec<plan::Listed> = host
+        .devices()
+        .map_err(OpenError::from)?
+        .map(|device| listed(&device))
+        .collect();
+    let default = default_device(&host, direction).map(|device| {
+        let id = own_id(&device);
+        if plan::is_pipewire_default(&host.id().to_string(), &id) {
+            server_default(&host, direction)
+        } else {
+            Some(id)
+        }
+    });
+    let default = default.flatten();
+    Ok(plan::listable(&host.id().to_string(), direction, &listed)
+        .into_iter()
+        .filter_map(|index| {
+            let device = listed.get(index)?;
+            let id = device.id.clone()?;
+            Some(DeviceInfo {
+                is_default: default.as_deref() == Some(id.as_str()),
+                id: DeviceId::new(id),
+                name: device.name.clone()?,
+            })
+        })
+        .collect())
 }
 
 /// The device's name. A device that is going away can fail to describe
@@ -387,12 +487,9 @@ where
     )
 }
 
-/// The default output's name, or `None` when there is none or it cannot be
-/// named just now.
-pub(crate) fn default_output_name() -> Option<String> {
-    host()
-        .default_output_device()
-        .and_then(|device| device_name(&device).ok())
+/// The default device's id, or `None` when there is none.
+pub(crate) fn default_id(direction: Direction) -> Option<String> {
+    default_device(&host(), direction).map(|device| own_id(&device))
 }
 
 /// Every output device's name. Nothing is opened. A device that cannot be
@@ -405,7 +502,7 @@ pub(crate) fn output_device_names() -> Result<Vec<String>, OpenError> {
         .collect())
 }
 
-/// The default output's name, polled on a thread of its own because
+/// The default device's id, polled on a thread of its own because
 /// enumerating devices can block on Windows. The thread ends with the watch.
 #[derive(Debug)]
 pub(crate) struct DefaultWatch(Arc<Mutex<Option<String>>>);
@@ -414,7 +511,7 @@ pub(crate) struct DefaultWatch(Arc<Mutex<Option<String>>>);
 const DEFAULT_CHECK_INTERVAL: Duration = Duration::from_secs(2);
 
 impl DefaultWatch {
-    pub(crate) fn start(initial: Option<String>) -> Self {
+    pub(crate) fn start(initial: Option<String>, direction: Direction) -> Self {
         let shared = Arc::new(Mutex::new(initial));
         let weak = Arc::downgrade(&shared);
         let started = std::thread::Builder::new()
@@ -425,18 +522,21 @@ impl DefaultWatch {
                     let Some(shared) = weak.upgrade() else {
                         break;
                     };
-                    let name = default_output_name();
-                    *shared.lock().unwrap_or_else(PoisonError::into_inner) = name;
+                    let id = default_id(direction);
+                    *shared.lock().unwrap_or_else(PoisonError::into_inner) = id;
                 }
             });
         if let Err(error) = started {
-            log::warn!("cannot watch the default audio output: {error}");
+            log::warn!(
+                "cannot watch the default audio {}: {error}",
+                direction.label()
+            );
         }
         Self(shared)
     }
 
-    /// The last polled name.
-    pub(crate) fn name(&self) -> Option<String> {
+    /// The last polled id.
+    pub(crate) fn id(&self) -> Option<String> {
         self.0
             .lock()
             .unwrap_or_else(PoisonError::into_inner)

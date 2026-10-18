@@ -90,16 +90,73 @@ pub trait Render: Send + 'static {
     fn render(&mut self, out: &mut [f32]);
 }
 
-/// Which output device to open. Only this one is ever opened; other devices
-/// are at most listed by name.
+/// A device's own id, to save in settings and open the same device again
+/// later, whatever its name or its place in the list. It names no audio
+/// system, so a saved one still reads on another machine, where it simply
+/// matches nothing and the default plays.
+///
+/// What it holds is the system's own id for the device:
+///
+/// - PipeWire: the node's `node.name`, such as
+///   `alsa_output.pci-0000_00_1f.3.analog-stereo`, which is also the sink or
+///   source name PulseAudio clients see under `pipewire-pulse`;
+/// - PulseAudio: the sink or source name, the same string;
+/// - ALSA: the PCM name, such as `hw:CARD=PCH,DEV=0` or `default`;
+/// - WASAPI: the endpoint id, `{0.0.0.00000000}.{guid}`;
+/// - CoreAudio: the device's UID.
+///
+/// These stay the same across restarts and reconnections, as long as the
+/// device is plugged into the same port (ALSA and PipeWire derive theirs
+/// from the card and the port).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct DeviceId(String);
+
+impl DeviceId {
+    /// An id read back from settings.
+    pub fn new(saved: impl Into<String>) -> Self {
+        Self(saved.into())
+    }
+
+    /// The id as a string, to save.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for DeviceId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+/// Which device to open. Only this one is ever opened; other devices are at
+/// most listed.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum Device {
-    /// The system's default output.
+    /// The system's default device.
     #[default]
     Default,
-    /// A device by the name [`output_device_names`] gives. When it is not
-    /// there, the default output plays instead, and a warning is logged.
+    /// A device by the id [`output_devices`] or [`input_devices`] gives. When
+    /// it is not there, the default device plays instead, and a warning is
+    /// logged.
+    Id(DeviceId),
+    /// An output device by the name [`output_device_names`] gives, or any
+    /// device by its [`DeviceInfo::name`]. When it is not there, the default
+    /// device plays instead, and a warning is logged. Two devices can share a
+    /// name; prefer [`Device::Id`].
     Named(String),
+}
+
+/// A device a picker can offer.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DeviceInfo {
+    /// Its id, to save and open it by ([`Device::Id`]).
+    pub id: DeviceId,
+    /// Its name, to show.
+    pub name: String,
+    /// Whether it is the system's default device just now.
+    pub is_default: bool,
 }
 
 /// A buffer size, in frames or as a duration at the stream's rate.
@@ -263,7 +320,8 @@ pub enum Maintained {
     /// Nothing changed.
     Unchanged,
     /// A new stream is playing, possibly on another device, at another rate
-    /// or with other channels; [`Render::configure`] has been told.
+    /// or with other channels; [`Render::configure`] has been told. The new
+    /// device's id is [`Output::device_id`] from now on.
     Reopened {
         /// The device's name.
         device: String,
@@ -301,6 +359,7 @@ pub struct Output<R: Render> {
     stall: plan::Stall,
     watch: Option<DefaultWatch>,
     device: String,
+    id: DeviceId,
     sample_rate: u32,
     channels: u16,
 }
@@ -330,9 +389,10 @@ impl<R: Render> Output<R> {
         let watch = (options.follow_default
             && options.device == Device::Default
             && cfg!(any(target_os = "macos", windows)))
-        .then(|| DefaultWatch::start(live.default_at_open.clone()));
+        .then(|| DefaultWatch::start(live.default_at_open.clone(), plan::Direction::Output));
         Ok(Self {
             device: live.device.clone(),
+            id: live.id.clone(),
             sample_rate: live.sample_rate,
             channels: live.channels,
             options,
@@ -484,6 +544,17 @@ impl<R: Render> Output<R> {
         &self.device
     }
 
+    /// The device's id, to save and open it again by ([`Device::Id`]).
+    ///
+    /// For the default device, the device it is just now. On PipeWire the
+    /// stream follows the default itself and its node is not named, so this
+    /// is the default's node as PipeWire's PulseAudio server names it, or
+    /// cpal's own `output_default` without one.
+    #[must_use]
+    pub fn device_id(&self) -> &DeviceId {
+        &self.id
+    }
+
     /// The stream's sample rate.
     #[must_use]
     pub fn sample_rate(&self) -> u32 {
@@ -500,7 +571,7 @@ impl<R: Render> Output<R> {
         let (Some(watch), Some(live)) = (&self.watch, &self.live) else {
             return false;
         };
-        match (watch.name(), &live.default_at_open) {
+        match (watch.id(), &live.default_at_open) {
             (Some(now), Some(then)) => &now != then,
             _ => false,
         }
@@ -520,6 +591,7 @@ impl<R: Render> Output<R> {
             Ok(live) => {
                 self.stall = plan::Stall::new(self.clock.played(), Instant::now());
                 self.device = live.device.clone();
+                self.id = live.id.clone();
                 self.sample_rate = live.sample_rate;
                 self.channels = live.channels;
                 self.live = Some(live);
@@ -569,6 +641,37 @@ pub fn host() -> &'static str {
 
 /// The output devices' names, for a device picker. Nothing is opened, so a
 /// device another program or a USB peripheral is using is left alone.
+///
+/// The names are every output cpal lists, as before [`output_devices`]: on
+/// PipeWire that includes cpal's own default devices and other apps'
+/// playback streams. Prefer [`output_devices`], whose ids also tell apart
+/// two devices with the same name.
 pub fn output_device_names() -> Result<Vec<String>, OpenError> {
     stream::output_device_names()
+}
+
+/// The output devices a picker can offer, with their ids and which one is
+/// the default. Nothing is opened. Listing asks the audio system, which can
+/// take a moment: call it off the UI thread.
+///
+/// Left out: what is not a device of its own, such as PipeWire's default
+/// devices (which [`Device::Default`] stands for) and other apps' playback
+/// streams, and ALSA's `null` device. A device that cannot give its id or
+/// name just now (it is going away) is left out too.
+///
+/// On PipeWire, the default is found through its PulseAudio server; without
+/// one, no device is marked the default.
+pub fn output_devices() -> Result<Vec<DeviceInfo>, OpenError> {
+    stream::devices(plan::Direction::Output)
+}
+
+/// The input devices a picker can offer: microphones, line inputs and other
+/// sources, with their ids and which one is the default. Nothing is opened.
+///
+/// Left out: the monitors of output devices (what an output is playing),
+/// PipeWire's default devices and ALSA's `null` device, as for
+/// [`output_devices`]. On PipeWire another app's recording stream can
+/// still be listed: cpal does not tell it apart from a source.
+pub fn input_devices() -> Result<Vec<DeviceInfo>, OpenError> {
+    stream::devices(plan::Direction::Input)
 }
