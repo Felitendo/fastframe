@@ -27,6 +27,7 @@ impl Session {
         } else {
             value.body.clone()
         };
+        let icon = app_icon(app);
         let image = value.image.as_ref().map(|path| path.to_string_lossy());
         let mut hints = HashMap::<&str, Value<'_>>::new();
         hints.insert("desktop-entry", Value::from(desktop_entry.as_str()));
@@ -68,7 +69,7 @@ impl Session {
                 &(
                     &app.name,
                     replace,
-                    &app.icon,
+                    &icon,
                     &value.title,
                     body,
                     actions,
@@ -85,6 +86,26 @@ impl Session {
             .await
             .map_err(|_| unavailable(self))
     }
+}
+/// The theme icon while one is installed, otherwise the app's logo file.
+fn app_icon(app: &App) -> String {
+    crate::mapping::linux_app_icon(app, |name| {
+        let folders = crate::mapping::linux_icon_folders(
+            std::env::var_os("HOME").map(Into::into),
+            std::env::var_os("XDG_DATA_HOME").map(Into::into),
+            std::env::var_os("XDG_DATA_DIRS"),
+        );
+        crate::mapping::linux_icon_installed(
+            name,
+            &folders,
+            |folder| {
+                std::fs::read_dir(folder)
+                    .map(|entries| entries.flatten().map(|entry| entry.path()).collect())
+                    .unwrap_or_default()
+            },
+            std::path::Path::is_file,
+        )
+    })
 }
 fn unavailable(failed: &Session) -> Error {
     SESSION.with_borrow_mut(|current| {

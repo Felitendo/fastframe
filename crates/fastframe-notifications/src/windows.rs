@@ -24,8 +24,6 @@ fn wide(text: &str) -> Vec<u16> {
 }
 fn identity(app: &App) -> Result<(), Error> {
     let path = wide(&format!(r"Software\Classes\AppUserModelId\{}", app.id));
-    let name = wide("DisplayName");
-    let value = wide(&app.name);
     let mut key = std::ptr::null_mut();
     // The validated ID cannot escape the key. Buffers remain alive and are
     // NUL terminated; the opened key is closed on every path after creation.
@@ -33,16 +31,24 @@ fn identity(app: &App) -> Result<(), Error> {
     if status != 0 {
         return Err(Error::Delivery);
     }
-    let status = unsafe {
-        RegSetValueExW(
-            key,
-            name.as_ptr(),
-            0,
-            REG_SZ,
-            value.as_ptr().cast(),
-            (value.len() * size_of::<u16>()) as u32,
-        )
-    };
+    let status = crate::mapping::windows_identity(app)
+        .iter()
+        .map(|(name, value)| {
+            let name = wide(name);
+            let value = wide(value);
+            unsafe {
+                RegSetValueExW(
+                    key,
+                    name.as_ptr(),
+                    0,
+                    REG_SZ,
+                    value.as_ptr().cast(),
+                    (value.len() * size_of::<u16>()) as u32,
+                )
+            }
+        })
+        .find(|status| *status != 0)
+        .unwrap_or(0);
     unsafe {
         RegCloseKey(key);
     }

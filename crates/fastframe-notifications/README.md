@@ -8,7 +8,10 @@ background task notifications. No window or egui dependency.
 use fastframe_notifications::{App, Client, Event, Notification, Sound};
 
 let notifications = Client::new(
-    App::new("com.example.app", "Example").desktop_entry("example").icon("example")
+    App::new("com.example.app", "Example")
+        .desktop_entry("example")
+        .icon("example")
+        .icon_file("/home/me/.local/share/example/logo.png"),
 )?;
 let notice = notifications.show_with(
     Notification::new("Export complete")
@@ -59,8 +62,13 @@ changes in system settings take effect without a restart.
 
 Use the installed application's identity, not another program's identity.
 On Windows, `App::new`'s ID must match the shortcut's AppUserModelID. Fastframe
-registers its display name for portable builds. Linux uses the desktop entry,
-including Flatpak's exported identity. Linux reports `Permission::Unknown`
+registers its display name for portable builds, and `icon_file` as its
+`IconUri`, without which toasts show a blank icon. Linux uses the desktop entry,
+including Flatpak's exported identity, and the `icon` theme name. When neither
+the `hicolor` theme nor `pixmaps` has that icon, as in a portable archive or a
+development build, Linux sends the `icon_file` path instead. Write the logo to
+a stable file once, for example in the app's data folder, and pass its
+absolute path. Linux reports `Permission::Unknown`
 when the service is available because Freedesktop does not expose per-app
 permission settings.
 
@@ -78,6 +86,7 @@ AppleScript, Terminal impersonation, or busy-run-loop heuristic is used.
 | Click and named actions while observed | Yes | Yes | Yes |
 | Replace and withdraw by key | Yes, within this client | Yes, including after restart | Yes, including after restart |
 | Live progress | Percentage and plain text | Ordinary notifications | Ordinary notifications |
+| App icon | Theme icon, or `icon_file` | Application bundle icon | `icon_file` |
 | Avatar | Local image | Application icon | Local circular image |
 | Default / silent sound | Yes | Yes | Yes |
 | Named sound | Sound theme | File in bundle Resources | System default |

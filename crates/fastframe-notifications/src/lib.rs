@@ -78,6 +78,7 @@ pub struct App {
     pub(crate) name: String,
     pub(crate) desktop_entry: String,
     pub(crate) icon: String,
+    pub(crate) icon_file: Option<PathBuf>,
 }
 impl App {
     /// `id` is the bundle ID / Windows shortcut AUMID; `name` is the display name.
@@ -86,6 +87,7 @@ impl App {
         Self {
             desktop_entry: id.clone(),
             icon: id.clone(),
+            icon_file: None,
             id,
             name: name.into(),
         }
@@ -100,6 +102,18 @@ impl App {
         self.icon = value.into();
         self
     }
+    /// Absolute path of an image of the app's logo, a PNG (or an ICO on Windows).
+    ///
+    /// Windows registers it as the AppUserModelID's `IconUri`, so toasts show it
+    /// instead of a blank icon. Linux sends it in place of [`App::icon`] when no
+    /// `hicolor` theme or `pixmaps` folder has an icon of that name, as in a
+    /// portable or development build; installed packages keep following the
+    /// theme. macOS always shows the application bundle's icon. A relative path
+    /// makes [`Client::new`] return [`Error::InvalidInput`].
+    pub fn icon_file(mut self, path: impl Into<PathBuf>) -> Self {
+        self.icon_file = Some(path.into());
+        self
+    }
     fn validate(&self) -> Result<(), Error> {
         if self.id.is_empty()
             || self.id.len() > 128
@@ -110,6 +124,9 @@ impl App {
             || self.name.is_empty()
             || self.name.len() > 1024
             || self.name.contains('\0')
+            || self.icon_file.as_ref().is_some_and(|path| {
+                !path.is_absolute() || path.as_os_str().to_string_lossy().contains('\0')
+            })
         {
             Err(Error::InvalidInput)
         } else {
@@ -433,6 +450,13 @@ mod tests {
         for id in ["", "../other", "a\\b", "a\0b"] {
             assert_eq!(App::new(id, "Test").validate(), Err(Error::InvalidInput));
         }
+        let app = App::new("com.example.app", "Test");
+        assert_eq!(
+            app.clone().icon_file("icons/app.png").validate(),
+            Err(Error::InvalidInput)
+        );
+        let absolute = std::env::temp_dir().join("app.png");
+        assert_eq!(app.icon_file(absolute).validate(), Ok(()));
         for key in ["", "a\nb", "a\0b"] {
             assert_eq!(
                 Notification::new("Title").key(key).validate(),
