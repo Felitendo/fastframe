@@ -626,25 +626,21 @@ impl Stall {
 
 /// The interleaved sample ranges to render one callback's buffer in, of at
 /// most `max_frames` frames each. Lengths in samples, so the last block
-/// holds what is left.
+/// holds what is left. An iterator, so the callback allocates nothing for
+/// them.
 pub(crate) fn blocks(
     samples: usize,
     channels: usize,
     max_frames: Option<u32>,
-) -> Vec<(usize, usize)> {
+) -> impl Iterator<Item = (usize, usize)> {
     let channels = channels.max(1);
     let step = match max_frames {
         Some(frames) if frames > 0 => (frames as usize).saturating_mul(channels),
         _ => samples.max(1),
     };
-    let mut out = Vec::new();
-    let mut start = 0;
-    while start < samples {
-        let end = (start + step).min(samples);
-        out.push((start, end));
-        start = end;
-    }
-    out
+    (0..samples)
+        .step_by(step)
+        .map(move |start| (start, (start + step).min(samples)))
 }
 
 #[cfg(test)]
@@ -1386,11 +1382,37 @@ mod tests {
     #[test]
     fn a_callback_is_rendered_in_blocks_of_at_most_the_asked_frames() {
         // 1200 stereo frames in blocks of 512 frames.
+        let blocks = |samples, channels, max| blocks(samples, channels, max).collect::<Vec<_>>();
         assert_eq!(
             blocks(2400, 2, Some(512)),
             [(0, 1024), (1024, 2048), (2048, 2400)]
         );
         assert_eq!(blocks(2400, 2, None), [(0, 2400)]);
         assert_eq!(blocks(0, 2, Some(512)), []);
+        assert_eq!(blocks(1024, 2, Some(512)), [(0, 1024)]);
+    }
+
+    #[test]
+    fn a_callback_allocates_nothing_once_its_buffers_are_sized() {
+        // What the output and input callbacks do each time, on buffers
+        // sized at open: render in blocks, and remix a capture.
+        let frames = 1200;
+        let mut scratch: Vec<f32> = Vec::with_capacity(frames * 2);
+        let mut mixed: Vec<f32> = Vec::with_capacity(frames * 2);
+        let captured = vec![0.25_f32; frames];
+        let allocations = crate::allocations::during(|| {
+            for _ in 0..3 {
+                scratch.clear();
+                scratch.resize(frames * 2, 0.0);
+                for (start, end) in super::blocks(scratch.len(), 2, Some(512)) {
+                    scratch[start..end].fill(0.5);
+                }
+                remix(&captured, 1, 2, &mut mixed);
+            }
+        });
+        assert_eq!(allocations, 0);
+        assert_eq!(mixed.len(), frames * 2);
+        // The counter does count.
+        assert!(crate::allocations::during(|| drop(vec![0_u8; 16])) > 0);
     }
 }

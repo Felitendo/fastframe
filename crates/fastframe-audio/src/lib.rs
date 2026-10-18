@@ -53,6 +53,8 @@
 //! # Ok::<(), fastframe_audio::OpenError>(())
 //! ```
 
+#[cfg(test)]
+mod allocations;
 mod clock;
 mod feeder;
 #[cfg(feature = "rodio")]

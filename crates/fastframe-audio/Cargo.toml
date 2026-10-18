@@ -65,7 +65,8 @@ required-features = ["rodio"]
 # The workspace forbids unsafe code. Joining MMCSS and raising a thread's
 # priority are one OS call each, so this crate carries the workspace's lints
 # with `unsafe_code` lowered to `deny`, allowed only in `mmcss.rs`,
-# `feeder.rs` and `realtime.rs`, with a SAFETY note on each call.
+# `feeder.rs` and `realtime.rs`, with a SAFETY note on each call, and in the
+# test-only `allocations.rs`, whose counting allocator is an `unsafe impl`.
 [lints.rust]
 unsafe_code = "deny"
 missing_docs = "warn"

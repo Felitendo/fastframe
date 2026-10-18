@@ -628,6 +628,15 @@ impl Thread {
     }
 }
 
+/// The frames of a fixed buffer, to size a callback's buffers at open, or
+/// `0` for the driver's, whose size is known only at the first callback.
+fn fixed_frames(config: &cpal::StreamConfig) -> usize {
+    match config.buffer_size {
+        cpal::BufferSize::Fixed(frames) => frames as usize,
+        cpal::BufferSize::Default => 0,
+    }
+}
+
 /// An output stream that renders through the app's renderer in `T`.
 fn play<T, R>(
     (device, config, renderer, callback): BuildArgs<'_, Rendering<R>>,
@@ -645,7 +654,9 @@ where
     } = callback;
     let channels = usize::from(config.channels);
     let rate = config.sample_rate;
-    let mut scratch: Vec<f32> = Vec::new();
+    // Sized here for a fixed buffer; with the driver's, it grows to the
+    // largest callback and is reused from then on.
+    let mut scratch: Vec<f32> = Vec::with_capacity(fixed_frames(config) * channels);
     let errors = Arc::clone(&shared);
     let mut timeline = plan::Timeline::default();
     let mut thread = Thread::new(device, Direction::Output);
@@ -733,10 +744,7 @@ where
     let rate = config.sample_rate;
     // Sized here for a fixed buffer; with the driver's, they grow to the
     // largest callback and are reused from then on.
-    let frames = match config.buffer_size {
-        cpal::BufferSize::Fixed(frames) => frames as usize,
-        cpal::BufferSize::Default => 0,
-    };
+    let frames = fixed_frames(config);
     let mut scratch: Vec<f32> = Vec::with_capacity(frames * channels);
     // What the capturer takes when it asked for other channels than the
     // source's (`plan::remix`).
