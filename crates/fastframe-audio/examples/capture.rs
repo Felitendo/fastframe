@@ -11,6 +11,10 @@
 //! each channel (the first eight). `--watch <seconds>` instead captures for
 //! that long, reporting each second and calling `maintain()` before each
 //! report, to show the input following a new default.
+//!
+//! It also says how long after `Input::open` returned the first block, and
+//! the first block that is not all silence, reached the capturer: the sound
+//! an app recording from the moment it opens would lose.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU16, AtomicU32, AtomicU64, Ordering};
@@ -27,10 +31,25 @@ struct Stats {
     /// The loudest sample of each channel since the last report, as `f32`
     /// bits.
     peaks: [AtomicU32; 8],
+    /// When the first block, and the first block that is not all silence,
+    /// came, in nanoseconds after [`Meter::since`] plus one (`0` until then).
+    first_block: AtomicU64,
+    first_sound: AtomicU64,
 }
 
 struct Meter {
     stats: Arc<Stats>,
+    /// Taken just before `Input::open`.
+    since: Instant,
+}
+
+impl Meter {
+    fn mark(&self, first: &AtomicU64) {
+        if first.load(Ordering::Relaxed) == 0 {
+            let nanos = u64::try_from(self.since.elapsed().as_nanos()).unwrap_or(u64::MAX);
+            first.store(nanos.saturating_add(1), Ordering::Relaxed);
+        }
+    }
 }
 
 impl Capture for Meter {
@@ -39,6 +58,10 @@ impl Capture for Meter {
     }
 
     fn capture(&mut self, input: &[f32]) {
+        self.mark(&self.stats.first_block);
+        if input.iter().any(|sample| *sample != 0.0) {
+            self.mark(&self.stats.first_sound);
+        }
         let channels = usize::from(self.stats.channels.load(Ordering::Relaxed)).max(1);
         for (channel, peak) in self.stats.peaks.iter().enumerate().take(channels) {
             let loudest = input
@@ -78,10 +101,11 @@ fn main() -> Result<(), fastframe_audio::OpenError> {
         .unwrap_or(0);
 
     let stats = Arc::new(Stats::default());
+    let opening = Instant::now();
     let meter = Meter {
         stats: Arc::clone(&stats),
+        since: opening,
     };
-    let opening = Instant::now();
     let mut input = Input::open(
         InputOptions {
             device,
@@ -139,6 +163,21 @@ fn main() -> Result<(), fastframe_audio::OpenError> {
             clock.latency()
         );
     };
+    // How long after `open` returned a first came, or that none has.
+    let after_open = |first: &AtomicU64| match first.load(Ordering::Relaxed) {
+        0 => "none yet".to_owned(),
+        nanos => format!(
+            "{:?} after open returned",
+            Duration::from_nanos(nanos - 1).saturating_sub(opened)
+        ),
+    };
+    let firsts = || {
+        println!(
+            "first block {}, first sound {}",
+            after_open(&stats.first_block),
+            after_open(&stats.first_sound)
+        );
+    };
     let watch = args
         .iter()
         .position(|arg| arg == "--watch")
@@ -156,9 +195,11 @@ fn main() -> Result<(), fastframe_audio::OpenError> {
             }
             report("capturing");
         }
+        firsts();
         return Ok(());
     }
     report("capturing");
+    firsts();
     input.pause();
     std::thread::sleep(Duration::from_millis(200));
     report("paused");
