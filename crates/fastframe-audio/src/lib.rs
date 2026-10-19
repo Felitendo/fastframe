@@ -656,6 +656,11 @@ impl<C: Capture> Input<C> {
     /// seconds when that server does not answer. It is asked on the thread
     /// that opens, never on the audio thread. A failure is not remembered:
     /// the next `open` tries again.
+    ///
+    /// It returns before the first block comes. A source that has been idle
+    /// has to start again first, which took a few hundred milliseconds on
+    /// PipeWire, whichever way it was opened; the [`clock`](Self::clock)
+    /// moves once capturing has begun.
     pub fn open(options: InputOptions, capturer: C) -> Result<Self, OpenError> {
         Ok(Self {
             session: Session::open(options.settings(), Capturing(capturer))?,

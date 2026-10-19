@@ -179,6 +179,15 @@ lost what came in between (overruns). On PulseAudio cpal estimates those
 times from the wall clock, so a callback that came late without losing
 anything can count there.
 
+A source that has been idle starts slowly. PipeWire suspends a source a few
+seconds after its last stream stops, and the device has to start again
+before the first block comes, while `open()` returns at once. On the test
+machine's Cam Link 4K that took about 240 ms after a few seconds idle and
+370 ms after half a minute, as long for the default input as for one opened
+by id, and as long for PipeWire's own `pw-cat`. An app that records from a
+key press loses what is said in that time: open the input earlier, or say
+it is recording only once its clock moves (`clock().played()` above zero).
+
 ## The feeding thread
 
 The callback runs ahead of ordinary work: on CoreAudio's real-time I/O
@@ -350,11 +359,13 @@ output pausing itself after each.
 
 `cargo run -p fastframe-audio --example capture` opens the default input,
 measures what it captures (how many samples, the loudest in each channel)
-and drops it, capturing, paused and resumed; `-- --channels 2` asks for
-two channels, and `-- --watch 10` captures for ten seconds, calling
-`maintain()` each second, to show it following a new default source. Nothing is saved or sent. `--example devices`
-lists the outputs and inputs with their ids, and `-- --device <id>` opens
-one in `idle` or `capture`.
+and drops it, capturing, paused and resumed, and says how long after
+`open()` returned the first block, and the first that is not silence, came;
+`-- --channels 2` asks for two channels, and `-- --watch 10` captures for
+ten seconds, calling `maintain()` each second, to show it following a new
+default source. Nothing is saved or sent. `--example devices` lists the
+outputs and inputs with their ids, and `-- --device <id>` opens one in
+`idle` or `capture`.
 
 ## Not in this crate
 
