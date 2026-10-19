@@ -33,6 +33,9 @@ use std::sync::Arc;
 use egui::epaint::text::VariationCoords;
 use egui::{FontData, FontDefinitions, FontFamily, FontId};
 
+mod local;
+pub use local::{FontError, LocalFont, MAX_FONT_BYTES};
+
 pub mod system;
 
 /// Inter 4.001, the variable font with `wght` and `opsz` axes, with the
@@ -145,6 +148,7 @@ pub enum Monospace {
 #[derive(Clone, Debug)]
 pub struct FontSetup {
     primary: Primary,
+    local_font: Option<LocalFont>,
     weights: Vec<Weight>,
     monospace: Monospace,
     companions: Vec<(String, Arc<FontData>)>,
@@ -156,6 +160,7 @@ impl Default for FontSetup {
     fn default() -> Self {
         Self {
             primary: Primary::default(),
+            local_font: None,
             weights: Weight::ALL.to_vec(),
             monospace: Monospace::EguiDefault,
             companions: Vec::new(),
@@ -170,6 +175,14 @@ impl FontSetup {
     #[must_use]
     pub fn primary(mut self, primary: Primary) -> Self {
         self.primary = primary;
+        self
+    }
+
+    /// Leads the interface families with a validated local font. The chosen
+    /// [`Primary`] stays behind it for missing glyphs; monospace is unchanged.
+    #[must_use]
+    pub fn local_font(mut self, font: LocalFont) -> Self {
+        self.local_font = Some(font);
         self
     }
 
@@ -315,6 +328,27 @@ impl FontSetup {
                 .insert(fallback.name.clone(), Arc::new(data));
             for family in fonts.families.values_mut() {
                 family.push(fallback.name.clone());
+            }
+        }
+        if let Some(font) = &self.local_font {
+            font.lead(&mut fonts);
+            // Only interface families move to the local baseline. Monospace
+            // keeps the same fallback data and metrics it had before.
+            for fallback in fallbacks {
+                let key = format!("fastframe-local-{}", fallback.name);
+                let mut data = (*fonts.font_data[&fallback.name]).clone();
+                data.tweak.y_offset_factor +=
+                    font.baseline - system::INTER_BASELINE_CENTER - realign;
+                fonts.font_data.insert(key.clone(), Arc::new(data));
+                for weight in Weight::ALL {
+                    if let Some(family) = fonts.families.get_mut(&weight.family()) {
+                        for name in family {
+                            if *name == fallback.name {
+                                *name = key.clone();
+                            }
+                        }
+                    }
+                }
             }
         }
         fonts

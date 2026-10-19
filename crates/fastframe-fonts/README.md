@@ -115,3 +115,24 @@ face an app bundles besides Inter (TonePush's IBM Plex Mono goes in through
 The code is MIT. Inter is under the SIL Open Font License 1.1; apps ship
 [`fonts/Inter-LICENSE.txt`](fonts/Inter-LICENSE.txt) with their other
 licences, as they already do.
+
+## A local interface font
+
+```rust,no_run
+use fastframe_fonts::{FontSetup, LocalFont};
+let font = LocalFont::load("interface.ttf", 0)?;
+let definitions = FontSetup::default().local_font(font).definitions();
+# Ok::<(), fastframe_fonts::FontError>(())
+```
+
+Read the file off the UI thread. TTF and OTF outlines and TTC/OTC collections
+are supported, up to 32 MiB, with an explicit face index (zero for a single
+font). A face must draw Latin letters and digits with outlines; bitmap-only
+and colour-only faces are refused. Variable `wght` coordinates follow the
+existing weight roles. Static fonts use one shared face without synthetic bold.
+The selected System or Inter face and all script fallbacks remain behind it.
+Monospace and separate emoji rendering are unchanged. The app owns its picker,
+saved choice, file copying and cleanup. Once loaded, the font keeps immutable
+bytes and does not reopen the file. Variable fonts may use four copies of the
+file in egui; later definitions reuse them. Extracted from @mauriciobc's
+[ZapFast font setting](https://github.com/crmne/zapfast/pull/335).
