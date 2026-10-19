@@ -1,153 +1,130 @@
-# fastframe
+<p align="center">
+  <img src="docs/assets/images/logo.svg" width="96" height="96" alt="fastframe logo">
+</p>
 
-**egui on rails.** Documentation: [fastframe.dev](https://fastframe.dev).
+<h1 align="center">fastframe</h1>
+<p align="center"><strong>egui on rails.</strong> The desktop essentials around your app.</p>
+<p align="center">
+  <a href="https://fastframe.dev">Documentation</a> ·
+  <a href="https://fastframe.dev/getting-started/">Get started</a> ·
+  <a href="https://github.com/crmne/fastframe/releases">Releases</a> ·
+  <a href="https://github.com/sponsors/crmne">Sponsor</a>
+</p>
 
-fastframe is the shared foundation of a family of native desktop apps built
-with Rust and [egui](https://github.com/emilk/egui):
-[ZapFast](https://zapfast.rocks), [Spotifast](https://spotifast.rocks),
-[Solco](https://getsolco.com), [TonePush](https://docs.tonepush.rocks), and
-the [Chat with Work](https://chatwithwork.com) local agent. Each piece here was
-written for one of those apps first and moved here once another app needed it.
+Build your interface with egui. Let fastframe handle the parts a desktop app
+needs around it: native text, themes, tray menus, audio, media keys, sleep and
+wake, notifications, and updates that can roll back.
 
-## Principles
+Each capability is a small Rust crate. Take the ones you need, keep your own
+layout and product decisions, and run on **Linux, macOS, and Windows**.
+No telemetry or hosted service is required by the crates.
 
-- **Extract from working apps, never design up front.** Code arrives here
-  after it has shipped in an app, not before.
-- **Shared, then it moves.** A piece moves in once at least two apps have
-  it, or once one app has shipped it and the maintainer judges it general
-  enough for the others.
-- **Small crates, one workspace.** Each piece is its own `fastframe-*` crate,
-  so an app takes only what it uses.
-- **Good defaults, few knobs.** A crate does the right thing with no
-  configuration. Apps keep their own decisions (branding, layout, product
-  choices); fastframe does not make them.
-- **No telemetry, no hosted services.** Nothing here phones home or depends
-  on a server run by us.
-- **Fix upstream.** Bugs in egui, winit and friends are fixed in those
-  projects, not carried here as patches forever.
+Extracted from [ZapFast](https://zapfast.rocks),
+[Spotifast](https://spotifast.rocks), [Solco](https://getsolco.com),
+[TonePush](https://docs.tonepush.rocks), and
+[Chat with Work](https://chatwithwork.com).
+
+## See it
+
+Real egui windows from the [font specimen](crates/fastframe-fonts/examples/fonts.rs),
+using synthetic text. Interface weights and installed script fallbacks work in
+both themes. The light specimen uses a validated local font.
+
+| Default interface font, dark | Local interface font, light |
+| --- | --- |
+| ![Dark native font specimen with multilingual text](docs/assets/images/fonts-dark.png) | ![Light native font specimen using a local font](docs/assets/images/fonts-light.png) |
+
+Run it with `cargo run -p fastframe-fonts --example fonts`, or append
+`-- /path/to/font.ttf` to try a local face. Installed fallback faces vary by platform.
+
+## Start with fonts and text
+
+Requires **Rust 1.98+** and **egui 0.36.2**. fastframe is not on crates.io yet;
+pin every fastframe crate to the same release tag:
+
+```toml
+[dependencies]
+egui = "0.36.2"
+fastframe-fonts = { git = "https://github.com/crmne/fastframe", tag = "v0.13.0" }
+fastframe-text = { git = "https://github.com/crmne/fastframe", tag = "v0.13.0" }
+```
+
+At startup, before the first frame:
+
+```rust
+let mut fonts = fastframe_fonts::FontSetup::default().definitions();
+let rendering = fastframe_text::detect();
+rendering.apply_to(&mut fonts);
+ctx.set_fonts(fonts);
+ctx.all_styles_mut(|style| rendering.apply_to_visuals(&mut style.visuals));
+```
+
+Then add only what your app uses. Each crate README has its own setup example.
+The [getting started guide](https://fastframe.dev/getting-started/) explains
+integration, and the [migration guide](MIGRATION.md) shows what the existing
+apps replaced.
 
 ## Crates
 
 | Crate | What it does |
 | --- | --- |
-| [`fastframe-text`](crates/fastframe-text) | Follows the desktop's font rendering settings (hinting, antialiasing, sub-pixel positioning, text weight) and text size in egui, and snaps hand-placed text to whole pixels. |
-| [`fastframe-fonts`](crates/fastframe-fonts) | Bundled Inter, the platform's interface face, or a validated local font at the app's weights, and installed fonts for missing scripts and regional Han characters, aligned to its baseline. |
-| [`fastframe-emoji`](crates/fastframe-emoji) | Colour emoji in the platform's own style (Apple, Segoe UI, the desktop's) with a bundled fallback, in every egui text through an egui plugin or inline as selectable placeholders, drawn off the interface thread. |
-| [`fastframe-icons`](crates/fastframe-icons) | Embedded SVG icon sets for egui: the `icons!` macro, a bytes loader that survives `reduce_texture_memory`, and the Lucide icons the apps share. |
-| [`fastframe-theme`](crates/fastframe-theme) | JSON colour palettes, a catalogue loaded off the interface thread, the eight shared palettes, a light and a dark palette that follow the system's appearance, following the Omarchy desktop's theme with filesystem notifications, and revealing a change of colours from the middle of the window outwards. |
-| [`fastframe-i18n`](crates/fastframe-i18n) | Bundled gettext catalogs: a build-time PO compiler for `build.rs`, `gettext`/`pgettext`/`ngettext` lookups, system language detection, and the template update script. |
-| [`fastframe-log`](crates/fastframe-log) | Logs to stderr and a per-run file for bug reports, rewrites private targets, and records panics without their payload. |
-| [`fastframe-tray`](crates/fastframe-tray) | A tray item with the app's own menu: StatusNotifier on Linux, the notification area on Windows, the menu bar on macOS, with native menus, white and black renditions of the icon, and Dock reopening across window lifecycles. |
-| [`fastframe-dock`](crates/fastframe-dock) | An embedded Dock icon for unbundled macOS runs, hiding the macOS Dock icon at runtime (a menu-bar-only app), and unread badges on the macOS Dock, compatible Linux launchers and the Windows taskbar. |
-| [`fastframe-titlebar`](crates/fastframe-titlebar) | The title bar an app draws itself: a header that moves the window and answers a double-click as each platform does, room kept for the buttons (the traffic lights on macOS), and on Windows and Linux caption buttons in the desktop's layout and resizable edges. |
-| [`fastframe-shell`](crates/fastframe-shell) | Keeps an app running without a window around `eframe::run_native`, starts hidden, reopens windows at their remembered size, place and zoom, brings back windows restored off-screen, asks niri to raise the window, and logs updates that freeze it. |
-| [`fastframe-audio`](crates/fastframe-audio) | Audio output with bounded, preallocated conversion buffers and the app's own renderer, and input into its own capturer: a stream that gets no callbacks while paused, follows the default device, reopens after failures, keeps a clock of what has played and counts the gaps the device played, runs its callback in real time on Linux too, and gives the thread that feeds it precedence under load. |
-| [`fastframe-scroll`](crates/fastframe-scroll) | Scrolling that feels like the platform's: a 120-point wheel step, and Linux touchpad gestures that keep their speed, glide after the lift, and hold one axis. |
-| [`fastframe-autostart`](crates/fastframe-autostart) | Starts the app when the person logs in, with its window or hidden in the tray: an XDG autostart entry or the background portal in a Flatpak, a macOS login item or bundled agent, the Windows Run key, each read back from the platform. |
-| [`fastframe-instance`](crates/fastframe-instance) | One running copy per user: a crash-safe lock, and a private channel a second launch hands its request over (show the window, open a link, any line the app understands). |
-| [`fastframe-now-playing`](crates/fastframe-now-playing) | The desktop's media controls: what is playing, with artwork, in MPRIS, the Windows media overlay and the macOS Now Playing panel, and the media keys and buttons back. |
-| [`fastframe-power`](crates/fastframe-power) | The device's power, session and network state: energy saver, battery, display, lock, the network's reach and cost, sleep and wake with time to save first and a reader-thread sleep hook, EcoQoS in the background on Windows, keeping audio out of App Nap on macOS, and keeping the computer awake while it plays. |
-| [`fastframe-dirs`](crates/fastframe-dirs) | The app's config, state and cache folders: the platform's per-user folders, or a folder next to a portable copy on Windows, filled the first time with a copy of the per-user settings and state. |
-| [`fastframe-file`](crates/fastframe-file) | Replaces a file without ever leaving it half written: a temporary file beside it, flushed, then moved over it, privately if asked, on a thread of its own so the window never waits for the disk. |
-| [`fastframe-desktop`](crates/fastframe-desktop) | Who the app is to the desktop and what it says: the desktop entry a Flatpak exports, whether the session is GNOME, a desktop setting read through the portal (no `gsettings` process), and macOS notification permission guarded by the real application bundle. |
-| [`fastframe-notifications`](crates/fastframe-notifications) | Native notifications for GUI apps, TUIs and daemons: bounded delivery, click actions, replacement, withdrawal, permissions and platform identity. |
-| [`fastframe-update`](crates/fastframe-update) | Self-update from GitHub releases or the app's own signed HTTPS feed: detects package-managed installs, verifies signed checksums, installs through a helper with rollback, keeps the handoff format older app versions use, moves renamed installations onto the new name with their launchers, offers an opt-in pre-release channel, and replaces a user's AppImage in place when the app opts in. |
+| [`fastframe-text`](crates/fastframe-text) | Desktop font rendering settings, text scaling, and pixel snapping. |
+| [`fastframe-fonts`](crates/fastframe-fonts) | Inter, system or validated local interface fonts, with script and regional Han fallbacks. |
+| [`fastframe-emoji`](crates/fastframe-emoji) | Platform colour emoji, drawn off the UI thread, with a bundled fallback. |
+| [`fastframe-icons`](crates/fastframe-icons) | Embedded SVG icon sets, persistent image loading, and shared Lucide icons. |
+| [`fastframe-theme`](crates/fastframe-theme) | Editable JSON palettes, system appearance, live Omarchy themes, and colour transitions. |
+| [`fastframe-i18n`](crates/fastframe-i18n) | Bundled gettext catalogs, plural forms, language detection, and translation tooling. |
+| [`fastframe-log`](crates/fastframe-log) | Per-run logs for bug reports, private-target rewriting, and safe panic logging. |
+| [`fastframe-tray`](crates/fastframe-tray) | Native tray icons and menus on Linux, macOS, and Windows. |
+| [`fastframe-dock`](crates/fastframe-dock) | macOS Dock icons and visibility, plus desktop unread badges. |
+| [`fastframe-titlebar`](crates/fastframe-titlebar) | Draggable headers, native button layouts, double-click actions, and resize edges. |
+| [`fastframe-shell`](crates/fastframe-shell) | Keep running without a window, reopen it, and restore its size, position, and zoom. |
+| [`fastframe-audio`](crates/fastframe-audio) | Maintained audio input and output, preallocated output conversion, device changes, and rodio mixing. |
+| [`fastframe-scroll`](crates/fastframe-scroll) | Platform wheel steps, touchpad momentum, and axis locking. |
+| [`fastframe-autostart`](crates/fastframe-autostart) | Start at login through each platform, including Flatpak and hidden startup. |
+| [`fastframe-instance`](crates/fastframe-instance) | One running copy per user, with a private channel for subsequent launches. |
+| [`fastframe-now-playing`](crates/fastframe-now-playing) | Desktop media controls, artwork, media keys, and playback commands. |
+| [`fastframe-power`](crates/fastframe-power) | Power and network state, sleep hooks and acknowledgements, and keep-awake guards. |
+| [`fastframe-dirs`](crates/fastframe-dirs) | Platform config, state, and cache directories, including portable Windows installs. |
+| [`fastframe-file`](crates/fastframe-file) | Atomic file replacement and background writing, with private permissions when needed. |
+| [`fastframe-desktop`](crates/fastframe-desktop) | Desktop identity, portal settings, Flatpak entries, and macOS notification permission. |
+| [`fastframe-notifications`](crates/fastframe-notifications) | Native notifications with click actions, replacement, withdrawal, and permissions. |
+| [`fastframe-update`](crates/fastframe-update) | Signed updates from GitHub or HTTPS feeds, package detection, rollback, and prerelease channels. |
 
-## Status
+## egui and winit forks
 
-Early, extracted piece by piece. APIs will change while the first crates
-settle; nothing is on crates.io yet.
+fastframe builds against published egui releases. Our apps also use maintained
+forks for fixes awaiting upstream releases. The
+[getting started guide](docs/_guide/getting-started.md#egui-and-winit-forks)
+has the matching revisions, the complete app-root patch block, and the status
+of each fix. The current egui patch stack is based on **0.36.2**.
 
-## Using it
+## How the project grows
 
-Depend on a git revision for now:
+Code comes from working apps. A piece moves here after it has proved useful
+and is general enough to share. Small crates, good defaults, and few knobs
+keep the API manageable. Branding, layout, and product behavior stay in the app.
+Bugs in egui, winit, and other dependencies are fixed upstream.
 
-```toml
-[dependencies]
-fastframe-text = { git = "https://github.com/crmne/fastframe", rev = "<commit>" }
-```
+The project is young and APIs can change. Read the
+[release notes](https://github.com/crmne/fastframe/releases) before upgrading.
 
-Pin a revision rather than a branch, and update it deliberately.
+## Contributing
 
-### egui and winit forks
-
-The apps build against forks of egui and winit that carry fixes waiting for
-upstream releases. A library cannot pin those: Cargo applies `[patch]` only in
-the root workspace of the app being built, so each app keeps its own
-`[patch.crates-io]` section. fastframe crates depend on the published egui
-versions, and they must compile against both the release and the apps' fork.
-
-Every app on fastframe should use the revisions the apps use, so it gets the
-same fixes. Copy this into the app's root `Cargo.toml`:
-
-```toml
-[patch.crates-io]
-ecolor = { git = "https://github.com/crmne/egui", rev = "ba6790fe7cf46e58e8d27ce1524cbfdee745e938" }
-eframe = { git = "https://github.com/crmne/egui", rev = "ba6790fe7cf46e58e8d27ce1524cbfdee745e938" }
-egui = { git = "https://github.com/crmne/egui", rev = "ba6790fe7cf46e58e8d27ce1524cbfdee745e938" }
-egui-wgpu = { git = "https://github.com/crmne/egui", rev = "ba6790fe7cf46e58e8d27ce1524cbfdee745e938" }
-egui-winit = { git = "https://github.com/crmne/egui", rev = "ba6790fe7cf46e58e8d27ce1524cbfdee745e938" }
-egui_extras = { git = "https://github.com/crmne/egui", rev = "ba6790fe7cf46e58e8d27ce1524cbfdee745e938" }
-egui_glow = { git = "https://github.com/crmne/egui", rev = "ba6790fe7cf46e58e8d27ce1524cbfdee745e938" }
-emath = { git = "https://github.com/crmne/egui", rev = "ba6790fe7cf46e58e8d27ce1524cbfdee745e938" }
-epaint = { git = "https://github.com/crmne/egui", rev = "ba6790fe7cf46e58e8d27ce1524cbfdee745e938" }
-epaint_default_fonts = { git = "https://github.com/crmne/egui", rev = "ba6790fe7cf46e58e8d27ce1524cbfdee745e938" }
-winit = { git = "https://github.com/crmne/winit", rev = "ed7caa9023f10b397f5b6ec8284a840cbd8a6f65" }
-```
-
-Patch every egui crate the app uses from the same revision, so they share one
-`emath` and `epaint` (add `egui_kittest` if the app's tests use it), and move
-egui and winit together: the egui revision is built against that winit, and
-moving one alone does not build. An app that compensated for the zoom shrink
-itself (a `window_builder` that scales the restored size) drops that code when
-it moves to egui `ba6790fe` or later, or the size is scaled twice. Cargo warns
-about a patch for a crate the app does not use (`egui_extras`, say); leave
-that line out. With egui `ba6790fe` or later (emilk/egui#8621), a window or
-menu is left out of the accessibility tree on the frame that sizes it, so a
-test that reads the tree right after opening one runs one more frame first.
-
-What the forks carry, and where each patch stands upstream. Each patch goes
-upstream as a pull request and stays in the fork until an egui or winit
-release includes it; then the fork drops it.
-
-| Fix | Fork | Upstream |
-| --- | --- | --- |
-| Right-to-left text shaped in its direction | egui `6147de7b`, `8e592348` | [emilk/egui#8577](https://github.com/emilk/egui/pull/8577), open |
-| No busy loop while waiting for a redraw | egui `f14640be` | [emilk/egui#8398](https://github.com/emilk/egui/pull/8398), merged, not yet released |
-| No freeze when a Wayland window is hidden: frames paced by the compositor's callbacks | egui `41ff9ddf` | [emilk/egui#8631](https://github.com/emilk/egui/pull/8631), open |
-| The same, eframe's side of winit's `Occluded` | egui `0b431145` | [emilk/egui#8660](https://github.com/emilk/egui/pull/8660), a draft that waits for winit#4710 |
-| The xdg-shell `suspended` state reported as `Occluded` | winit `a51e41b2` | [rust-windowing/winit#4709](https://github.com/rust-windowing/winit/pull/4709) and [#4710](https://github.com/rust-windowing/winit/pull/4710) (0.30), open |
-| Paste and file drops together on Wayland: one data device for both (crmne/spotifast#614) | winit `1a8306ad`, `fb8b24c3`; egui `2ab31332` | [rust-windowing/winit#4729](https://github.com/rust-windowing/winit/pull/4729) (0.30), open; on winit's main branch, the clipboard pull request [#4658](https://github.com/rust-windowing/winit/pull/4658) uses the same data device. [emilk/egui#8657](https://github.com/emilk/egui/pull/8657), a draft that waits for winit#4729 |
-| Each emoji one emoji wide (families, skin tones, keycaps, flags) | egui `73e8b6c3` | not proposed: egui's main branch already draws each of these one emoji wide through the system's colour emoji fonts, and the patch only changes the monochrome fonts an app opts into |
-| No runaway resizing on Windows when a window moves between monitors of different scale | winit `f4fed12c` | on winit's main branch (`39c4009c`); the fork carries it for 0.30 |
-| macOS Quit through close requests, behind a feature | winit `a7b78b27` | [rust-windowing/winit#4692](https://github.com/rust-windowing/winit/pull/4692), open |
-| A focus request for a widget not drawn yet no longer crashes accessibility on Windows and macOS | egui `4c143c1d` | [emilk/egui#8621](https://github.com/emilk/egui/pull/8621), merged, not yet released |
-| Windows starts on OpenGL drivers older than 3.3: a compatibility-profile fallback | egui `57eb5714` | [emilk/egui#8655](https://github.com/emilk/egui/pull/8655), open |
-| A window keeps its size across restarts at any interface zoom | egui `56e7ac3c` | [emilk/egui#8656](https://github.com/emilk/egui/pull/8656), open |
-| A closed window leaves the screen on Touch Bar Macs | winit `ed7caa90` | [rust-windowing/winit#4728](https://github.com/rust-windowing/winit/pull/4728), a draft until confirmed on a Touch Bar Mac |
-
-On stock egui and winit, fastframe still builds and works, without these
-fixes.
-
-A future `forks.toml`, with a generator that writes each app's patch section
-and a CI check that they agree, will keep those pins in one place. It does not
-exist yet; until then, this section has the current revisions, and a fastframe
-release that needs newer ones says so in its notes.
-
-## Development
+See [AGENTS.md](AGENTS.md) for the complete checks and contribution rules.
+Behavior changes need focused tests, public API documentation, and support for
+all three desktop platforms. Tests use injected data instead of live services.
 
 ```sh
 cargo fmt --all --check
-cargo clippy --locked --all-targets -- -D warnings
 cargo clippy --locked --all-targets --all-features -- -D warnings
 cargo test --locked --all-targets --all-features
 RUSTDOCFLAGS='-D warnings' cargo doc --locked --all-features --no-deps
 ```
 
-[MIGRATION.md](MIGRATION.md) lists what each app replaces with each crate.
-
-See [AGENTS.md](AGENTS.md) for the rules contributors and coding agents follow.
+Found a problem? [Open an issue](https://github.com/crmne/fastframe/issues).
+For questions and ideas, use [Discussions](https://github.com/crmne/fastframe/discussions).
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+MIT. See [LICENSE](LICENSE). Bundled fonts retain their own licenses.

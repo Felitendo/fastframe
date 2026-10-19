@@ -36,6 +36,8 @@ log.workspace = true
 windows-sys = { workspace = true, features = ["Win32_Globalization", "Win32_Graphics_Gdi", "Win32_UI_WindowsAndMessaging"] }
 
 [dev-dependencies]
+# The workspace app shell runs the native font specimen and documentation capture.
+eframe.workspace = true
 # egui's own fonts, as the apps build with, so the fallback order is tested
 # against what they get.
 egui = { workspace = true, features = ["default_fonts"] }

@@ -1334,6 +1334,7 @@ name = "fastframe-fonts"
 version = "0.12.1"
 dependencies = [
  "directories",
+ "eframe",
  "egui",
  "log",
  "memmap2",

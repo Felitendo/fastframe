@@ -45,7 +45,7 @@ features:
     link_text: fastframe-shell
   - icon: 🔄
     title: Updates that roll back
-    details: Self-update from GitHub releases with signed checksums, package-manager detection, and a helper that restores the previous version if the new one does not start.
+    details: Self-update from GitHub releases or signed HTTPS feeds, package-manager detection, and a helper that restores the previous version if the new one does not start.
     link: /fastframe-update/
     link_text: fastframe-update
   - icon: 🌍
@@ -88,4 +88,12 @@ features:
       {% endfor %}
     </tbody>
   </table>
+</div>
+
+<div class="vp-doc" style="max-width: 1152px; margin: 3rem auto; padding: 0 24px;">
+  <h2>Native text, in both themes</h2>
+  <p>The font specimen is a real egui window with synthetic text. Try the default
+  interface face or load a validated local font, with the same weight roles and script fallbacks.</p>
+  <p><img src="{{ '/assets/images/fonts-dark.png' | relative_url }}" alt="Dark native font specimen with multilingual script fallbacks" loading="lazy" width="1000" height="620"></p>
+  <p><img src="{{ '/assets/images/fonts-light.png' | relative_url }}" alt="Light native font specimen with a local font" loading="lazy" width="1000" height="620"></p>
 </div>
