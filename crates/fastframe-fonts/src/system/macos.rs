@@ -38,6 +38,17 @@ pub(super) fn load() -> Vec<Found> {
     let mut found: Vec<Found> = Vec::new();
     let mut taken: Vec<(PathBuf, u32)> = Vec::new();
     for (script, probe, _) in SCRIPTS {
+        if *script == "han" {
+            for face in load_han() {
+                taken.push((face.path.clone(), face.index));
+                found.push(face);
+            }
+            continue;
+        }
+        if *script == "hans" {
+            continue;
+        }
+
         let candidates = resolve(*probe);
         if candidates.is_empty() {
             log::debug!("CoreText names no face for {script}");
@@ -75,6 +86,50 @@ pub(super) fn load() -> Vec<Found> {
         found.len()
     );
     found
+}
+
+/// Probe the cascade before mapping the selected files for process lifetime.
+fn load_han() -> Vec<Found> {
+    use super::han::{Coverage, KEYS, PROBES, select};
+    let mut candidates = Vec::new();
+    let mut coverage = Vec::new();
+    for (family, path) in resolve('中') {
+        let Some(index) = face_index(&path, &family, '中') else {
+            continue;
+        };
+        if candidates.contains(&(path.clone(), index)) {
+            continue;
+        }
+        let Some(bytes) = map(&path) else {
+            continue;
+        };
+        let Ok(font) = skrifa::FontRef::from_index(&bytes, index) else {
+            continue;
+        };
+        let probes = PROBES.iter().enumerate().fold(0, |bits, (i, ch)| {
+            bits | (u32::from(draws(&font, *ch)) << i)
+        });
+        let ideographs = font
+            .charmap()
+            .mappings()
+            .filter(|(code, _)| (0x4e00..=0x9fff).contains(code))
+            .count();
+        candidates.push((path, index));
+        coverage.push(Coverage { probes, ideographs });
+    }
+    select(&coverage)
+        .into_iter()
+        .zip(KEYS)
+        .filter_map(|(position, script)| {
+            let (path, index) = &candidates[position];
+            Some(Found {
+                script,
+                bytes: map_for_life(path)?,
+                index: *index,
+                path: path.clone(),
+            })
+        })
+        .collect()
 }
 
 /// The family name and file CoreText draws `probe` with, in the language the

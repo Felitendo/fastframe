@@ -82,6 +82,13 @@ reuses them for every window.
 | Linux | Every font under fontconfig's configured directories (NixOS lists its store paths only there), the XDG data directories, Flatpak's `/run/host/fonts`, `~/.fonts` and `$XDG_DATA_HOME/fonts` is probed through a memory map. The best regular sans face per script wins: a face named for the script beats incidental coverage, sans beats serif, mono and display cuts, weight near 400 beats far, and for Han the locale's regional cut (and a face declaring that region's code page) wins. |
 | Windows | The same probe over `%SystemRoot%\Fonts` and the per-user font directory; the display language picks the Han cut. |
 
+Han fallback preserves a broad face first and fills regional gaps. On macOS,
+CoreText's cascade supplies up to four complementary faces, each with its own
+font key and baseline adjustment. Short Korean hanja faces stay behind broad
+Han faces, and Japanese and simplified Chinese gaps get later faces that draw
+them. Faces without rasterizable outlines are skipped. Linux and Windows add
+a simplified Chinese probe only when the registered Han face cannot draw it.
+
 Each chosen face gets `y_offset_factor` so its baseline sits on Inter's
 (epaint centres a fallback's line box on the primary's, which shifts faces
 with other vertical metrics), and an Arabic face drawn small beside Inter is

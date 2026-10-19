@@ -23,6 +23,8 @@ use std::sync::OnceLock;
 
 use skrifa::MetadataProvider as _;
 
+#[cfg(any(target_os = "macos", test))]
+mod han;
 mod interface;
 #[cfg(target_os = "macos")]
 mod macos;
@@ -62,6 +64,11 @@ pub struct Fallback {
 /// the first. Glyphs are rasterized only when used.
 pub(crate) const SCRIPTS: &[(&str, char, &str)] = &[
     ("han", '\u{4e2d}', "cjk"),
+    // 们, a simplified character a Japanese face lacks. Where the Han face
+    // is Japanese (macOS answers Hiragino Sans on an English desktop), this
+    // registers a Chinese face behind it, so 们, 谢 and 联 do not draw as
+    // boxes. Where the Han face already draws it, nothing is added.
+    ("hans", '\u{4eec}', "cjk"),
     ("kana", '\u{3042}', "cjk"),
     ("hangul", '\u{d55c}', "cjk"),
     ("arabic", '\u{0627}', "arabic"),
@@ -177,6 +184,14 @@ pub(crate) fn named(font: &skrifa::FontRef<'_>, family: &str) -> bool {
         font.localized_strings(*id)
             .english_or_first()
             .is_some_and(|name| name.to_string().eq_ignore_ascii_case(family))
+    })
+}
+
+/// Whether a registered face already provides a usable outline.
+#[cfg(any(not(target_os = "macos"), test))]
+fn already_draws(found: &[Found], probe: char) -> bool {
+    found.iter().any(|face| {
+        skrifa::FontRef::from_index(face.bytes, face.index).is_ok_and(|font| draws(&font, probe))
     })
 }
 
@@ -378,7 +393,10 @@ mod scan {
         );
         let mut found: Vec<Found> = Vec::new();
         let mut taken: Vec<(PathBuf, u32)> = Vec::new();
-        for (script, _, _) in SCRIPTS {
+        for (script, probe, _) in SCRIPTS {
+            if *script == "hans" && super::already_draws(&found, *probe) {
+                continue;
+            }
             let Some(candidate) = best.get(script) else {
                 log::debug!("no fallback face covers {script}");
                 continue;
@@ -1017,6 +1035,37 @@ pub(crate) mod tests_support {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_registered_face_covers_only_characters_it_can_draw() {
+        let found = Found {
+            script: "yi",
+            bytes: include_bytes!("../tests/fixtures/yi/YiTest.ttf"),
+            index: 0,
+            path: "fixture.ttf".into(),
+        };
+        assert!(already_draws(&[found], '\u{a248}'));
+        assert!(!already_draws(&[], '们'));
+        let invalid = Found {
+            script: "han",
+            bytes: b"invalid",
+            index: 0,
+            path: "bad.ttf".into(),
+        };
+        assert!(!already_draws(&[invalid], '们'));
+    }
+
+    /// A Japanese face passes the Han probe but lacks simplified characters,
+    /// so a second probe that only a Chinese face draws follows it.
+    #[test]
+    fn simplified_han_has_a_probe_of_its_own_behind_han() {
+        let position = |name: &str| SCRIPTS.iter().position(|(script, _, _)| *script == name);
+        let han = position("han").unwrap();
+        let hans = position("hans").unwrap();
+        assert_eq!(hans, han + 1);
+        assert_eq!(SCRIPTS[hans].1, '们');
+        assert_ne!(SCRIPTS[han].1, SCRIPTS[hans].1);
+    }
 
     #[test]
     fn only_font_files_are_probed() {
