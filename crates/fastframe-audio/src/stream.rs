@@ -751,7 +751,7 @@ mod output_tests {
     #[test]
     fn first_and_growing_callbacks_allocate_nothing_and_keep_every_frame() {
         let mut scratch = vec![0.0; 8];
-        let mut out = vec![0.0_f32; 38];
+        let mut out = [0.0_f32; 38];
         for samples in [2, 8, 38, 10] {
             let mut next = 0;
             let allocations = crate::allocations::during(|| {
