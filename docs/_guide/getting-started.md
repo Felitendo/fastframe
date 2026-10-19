@@ -8,7 +8,7 @@ nav_order: 2
 
 - Rust 1.98 or later (the `rust-version` of every crate). An app pinned to an
   older toolchain in `rust-toolchain.toml` fails to resolve; bump it first.
-- egui and eframe 0.36.
+- egui and eframe 0.36.2.
 
 ## Add a crate
 
@@ -16,8 +16,8 @@ fastframe is not on crates.io. Depend on a release tag from GitHub:
 
 ```toml
 [dependencies]
-fastframe-text = { git = "https://github.com/crmne/fastframe", tag = "v0.2.3" }
-fastframe-fonts = { git = "https://github.com/crmne/fastframe", tag = "v0.2.3" }
+fastframe-text = { git = "https://github.com/crmne/fastframe", tag = "v0.13.0" }
+fastframe-fonts = { git = "https://github.com/crmne/fastframe", tag = "v0.13.0" }
 ```
 
 Use the same tag for every fastframe crate, and move it deliberately: the
@@ -65,28 +65,29 @@ the root workspace of the app being built, so each app keeps its own
 `[patch.crates-io]` section. fastframe crates depend on the published egui
 versions, and they must compile against both the release and the apps' fork.
 
-Every app on fastframe should use the revisions the apps use, so it gets the
-same fixes. Copy this into the app's root `Cargo.toml`:
+The maintained `apps-0.36.2` branch carries the app patches on egui 0.36.2.
+Use the revisions below together to get those fixes. Existing apps can keep
+their old pins until they upgrade fastframe. Copy this into the app's root `Cargo.toml`:
 
 ```toml
 [patch.crates-io]
-ecolor = { git = "https://github.com/crmne/egui", rev = "ba6790fe7cf46e58e8d27ce1524cbfdee745e938" }
-eframe = { git = "https://github.com/crmne/egui", rev = "ba6790fe7cf46e58e8d27ce1524cbfdee745e938" }
-egui = { git = "https://github.com/crmne/egui", rev = "ba6790fe7cf46e58e8d27ce1524cbfdee745e938" }
-egui-wgpu = { git = "https://github.com/crmne/egui", rev = "ba6790fe7cf46e58e8d27ce1524cbfdee745e938" }
-egui-winit = { git = "https://github.com/crmne/egui", rev = "ba6790fe7cf46e58e8d27ce1524cbfdee745e938" }
-egui_extras = { git = "https://github.com/crmne/egui", rev = "ba6790fe7cf46e58e8d27ce1524cbfdee745e938" }
-egui_glow = { git = "https://github.com/crmne/egui", rev = "ba6790fe7cf46e58e8d27ce1524cbfdee745e938" }
-emath = { git = "https://github.com/crmne/egui", rev = "ba6790fe7cf46e58e8d27ce1524cbfdee745e938" }
-epaint = { git = "https://github.com/crmne/egui", rev = "ba6790fe7cf46e58e8d27ce1524cbfdee745e938" }
-epaint_default_fonts = { git = "https://github.com/crmne/egui", rev = "ba6790fe7cf46e58e8d27ce1524cbfdee745e938" }
+ecolor = { git = "https://github.com/crmne/egui", rev = "6ce633ba5f7f64d19ef6d204f9377da560bb546b" }
+eframe = { git = "https://github.com/crmne/egui", rev = "6ce633ba5f7f64d19ef6d204f9377da560bb546b" }
+egui = { git = "https://github.com/crmne/egui", rev = "6ce633ba5f7f64d19ef6d204f9377da560bb546b" }
+egui-wgpu = { git = "https://github.com/crmne/egui", rev = "6ce633ba5f7f64d19ef6d204f9377da560bb546b" }
+egui-winit = { git = "https://github.com/crmne/egui", rev = "6ce633ba5f7f64d19ef6d204f9377da560bb546b" }
+egui_extras = { git = "https://github.com/crmne/egui", rev = "6ce633ba5f7f64d19ef6d204f9377da560bb546b" }
+egui_glow = { git = "https://github.com/crmne/egui", rev = "6ce633ba5f7f64d19ef6d204f9377da560bb546b" }
+emath = { git = "https://github.com/crmne/egui", rev = "6ce633ba5f7f64d19ef6d204f9377da560bb546b" }
+epaint = { git = "https://github.com/crmne/egui", rev = "6ce633ba5f7f64d19ef6d204f9377da560bb546b" }
+epaint_default_fonts = { git = "https://github.com/crmne/egui", rev = "6ce633ba5f7f64d19ef6d204f9377da560bb546b" }
 winit = { git = "https://github.com/crmne/winit", rev = "ed7caa9023f10b397f5b6ec8284a840cbd8a6f65" }
 ```
 
 Patch every egui crate the app uses from the same revision, so they share one
 `emath` and `epaint` (add `egui_kittest` if the app's tests use it), and move
 egui and winit together: the egui revision is built against that winit, and
-moving one alone does not build. An app that compensated for the zoom shrink
+mixing incompatible revisions can fail to build. An app that compensated for the zoom shrink
 itself (a `window_builder` that scales the restored size) drops that code when
 it moves to egui `ba6790fe` or later, or the size is scaled twice. Cargo warns
 about a patch for a crate the app does not use (`egui_extras`, say); leave
@@ -101,7 +102,7 @@ release includes it; then the fork drops it.
 | Fix | Fork | Upstream |
 | --- | --- | --- |
 | Right-to-left text shaped in its direction | egui `6147de7b`, `8e592348` | [emilk/egui#8577](https://github.com/emilk/egui/pull/8577), open |
-| No busy loop while waiting for a redraw | egui `f14640be` | [emilk/egui#8398](https://github.com/emilk/egui/pull/8398), merged, not yet released |
+| No busy loop while waiting for a redraw | included in 0.36.2, removed from the patch stack | [emilk/egui#8398](https://github.com/emilk/egui/pull/8398), merged |
 | No freeze when a Wayland window is hidden: frames paced by the compositor's callbacks | egui `41ff9ddf` | [emilk/egui#8631](https://github.com/emilk/egui/pull/8631), open |
 | The same, eframe's side of winit's `Occluded` | egui `0b431145` | [emilk/egui#8660](https://github.com/emilk/egui/pull/8660), a draft that waits for winit#4710 |
 | The xdg-shell `suspended` state reported as `Occluded` | winit `a51e41b2` | [rust-windowing/winit#4709](https://github.com/rust-windowing/winit/pull/4709) and [#4710](https://github.com/rust-windowing/winit/pull/4710) (0.30), open |

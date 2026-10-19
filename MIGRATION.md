@@ -22,7 +22,7 @@ an older toolchain in `rust-toolchain.toml` fails to resolve on macOS and
 Windows with "rustc 1.97.1 is not supported by fastframe-*"; bump the app's
 toolchain and `rust-version` to 1.98 first. Keep the app's `[patch.crates-io]`
 block for the egui and winit forks: patches only apply at the app's root.
-The README's "egui and winit forks" section has the revisions to use.
+The [getting started guide](docs/_guide/getting-started.md#egui-and-winit-forks) has the revisions to use.
 
 ## By app
 
