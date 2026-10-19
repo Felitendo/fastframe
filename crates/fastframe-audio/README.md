@@ -374,3 +374,9 @@ renderer, where rodio and kira already do them, and what is done with
 captured sound (encoding, saving, sending it) to the capturer. Pausing other
 media players while playing stays in the app that needs it until a second
 app does.
+
+Output conversion storage is allocated and initialized when the stream opens.
+The first callback and later, larger driver periods render in bounded,
+frame-aligned chunks without growing that storage. `max_block_frames` still
+limits each renderer call; the clock and idle state describe the full device
+callback. The app's renderer must also avoid allocating or blocking.

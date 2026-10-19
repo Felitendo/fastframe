@@ -669,9 +669,14 @@ where
     } = callback;
     let channels = usize::from(config.channels);
     let rate = config.sample_rate;
-    // Sized here for a fixed buffer; with the driver's, it grows to the
-    // largest callback and is reused from then on.
-    let mut scratch: Vec<f32> = Vec::with_capacity(fixed_frames(config) * channels);
+    // Bound and initialise storage before entering the real-time callback.
+    // A larger driver period is rendered in frame-aligned pieces.
+    let frames = match config.buffer_size {
+        cpal::BufferSize::Fixed(frames) => frames as usize,
+        cpal::BufferSize::Default => 4096,
+    }
+    .clamp(1, 16_384);
+    let mut scratch = vec![0.0; frames * channels];
     let errors = Arc::clone(&shared);
     let mut timeline = plan::Timeline::default();
     let mut thread = Thread::new(device, Direction::Output);
@@ -679,44 +684,25 @@ where
         *config,
         move |data: &mut [T], info: &cpal::OutputCallbackInfo| {
             thread.on_callback();
-            scratch.clear();
-            scratch.resize(data.len(), 0.0);
-            // The app's thread only takes the lock while (re)opening, before
-            // the stream starts; a contended lock renders silence rather
-            // than wait.
-            // Taken before rendering: a resume after this makes the mark
-            // this render leaves stale.
+            // Hold the renderer once per device callback. A contended lock
+            // renders silence, and the idle mark describes the whole callback.
             let wake = shared.wakes.load(Ordering::Acquire);
-            let rendered = match renderer.try_lock() {
-                Ok(mut renderer) => {
-                    for (start, end) in plan::blocks(scratch.len(), channels, max_block) {
-                        renderer.0.render(&mut scratch[start..end]);
-                    }
-                    if watch_idle {
-                        let mark = plan::idle_mark(wake, renderer.0.idle());
-                        shared.idle.store(mark, Ordering::Release);
-                    }
-                    true
-                }
-                Err(std::sync::TryLockError::Poisoned(poisoned)) => {
-                    let mut renderer = poisoned.into_inner();
-                    for (start, end) in plan::blocks(scratch.len(), channels, max_block) {
-                        renderer.0.render(&mut scratch[start..end]);
-                    }
-                    if watch_idle {
-                        let mark = plan::idle_mark(wake, renderer.0.idle());
-                        shared.idle.store(mark, Ordering::Release);
-                    }
-                    true
-                }
-                Err(std::sync::TryLockError::WouldBlock) => false,
+            let renderer = match renderer.try_lock() {
+                Ok(renderer) => Some(renderer),
+                Err(std::sync::TryLockError::Poisoned(poisoned)) => Some(poisoned.into_inner()),
+                Err(std::sync::TryLockError::WouldBlock) => None,
             };
-            for (out, sample) in data.iter_mut().zip(&scratch) {
-                *out = if rendered {
-                    T::from_sample(*sample)
-                } else {
-                    T::EQUILIBRIUM
-                };
+            if let Some(mut renderer) = renderer {
+                render_samples(data, &mut scratch, channels, max_block, |piece| {
+                    renderer.0.render(piece)
+                });
+                if watch_idle {
+                    shared
+                        .idle
+                        .store(plan::idle_mark(wake, renderer.0.idle()), Ordering::Release);
+                }
+            } else {
+                data.fill(T::EQUILIBRIUM);
             }
             let timestamp = info.timestamp();
             let latency = timestamp
@@ -736,6 +722,63 @@ where
         move |error| errors.report(error),
         None,
     )
+}
+
+/// Converts and renders into a device buffer using only storage made at open.
+fn render_samples<T: cpal::SizedSample + cpal::FromSample<f32>>(
+    data: &mut [T],
+    scratch: &mut [f32],
+    channels: usize,
+    max_block: Option<u32>,
+    mut render: impl FnMut(&mut [f32]),
+) {
+    for out in data.chunks_mut(scratch.len()) {
+        let piece = &mut scratch[..out.len()];
+        piece.fill(0.0);
+        for (start, end) in plan::blocks(piece.len(), channels, max_block) {
+            render(&mut piece[start..end]);
+        }
+        for (out, sample) in out.iter_mut().zip(piece) {
+            *out = T::from_sample(*sample);
+        }
+    }
+}
+
+#[cfg(test)]
+mod output_tests {
+    use super::render_samples;
+
+    #[test]
+    fn first_and_growing_callbacks_allocate_nothing_and_keep_every_frame() {
+        let mut scratch = vec![0.0; 8];
+        let mut out = vec![0.0_f32; 38];
+        for samples in [2, 8, 38, 10] {
+            let mut next = 0;
+            let allocations = crate::allocations::during(|| {
+                render_samples(&mut out[..samples], &mut scratch, 2, Some(3), |piece| {
+                    assert!(piece.len() <= 6 && piece.len() % 2 == 0);
+                    for sample in piece {
+                        assert_eq!(*sample, 0.0);
+                        *sample = next as f32;
+                        next += 1;
+                    }
+                });
+            });
+            assert_eq!(allocations, 0);
+            assert_eq!(next, samples);
+            for (index, sample) in out[..samples].iter().enumerate() {
+                assert_eq!(*sample, index as f32);
+            }
+        }
+    }
+
+    #[test]
+    fn scratch_is_cleared_and_unsigned_silence_is_converted() {
+        let mut scratch = [1.0; 4];
+        let mut out = [0_u16; 10];
+        render_samples(&mut out, &mut scratch, 2, None, |_| {});
+        assert_eq!(out, [32768; 10]);
+    }
 }
 
 /// An input stream that hands what the device captured, in `T`, to the
