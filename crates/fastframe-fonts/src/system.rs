@@ -188,7 +188,6 @@ pub(crate) fn named(font: &skrifa::FontRef<'_>, family: &str) -> bool {
 }
 
 /// Whether a registered face already provides a usable outline.
-#[cfg(any(not(target_os = "macos"), test))]
 fn already_draws(found: &[Found], probe: char) -> bool {
     found.iter().any(|face| {
         skrifa::FontRef::from_index(face.bytes, face.index).is_ok_and(|font| draws(&font, probe))
