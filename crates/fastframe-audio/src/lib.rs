@@ -57,6 +57,8 @@
 mod allocations;
 mod clock;
 mod feeder;
+#[cfg(any(target_os = "linux", test))]
+mod kept;
 #[cfg(feature = "rodio")]
 mod mixer;
 #[cfg(target_os = "windows")]
@@ -601,10 +603,10 @@ impl<R: Render> Output<R> {
     /// For the default device, the device it is just now. On PipeWire the
     /// stream follows the default itself and its node is not named, so this
     /// is the default's node as PipeWire's PulseAudio server names it, or
-    /// cpal's own `output_default` without one. Finding it connects to that
-    /// server (about 10 ms, longer if it does not answer), so it is done on
-    /// the first call after each open, not by the open itself; call it
-    /// where waiting is fine.
+    /// cpal's own `output_default` without one. Finding it asks that server
+    /// (the process's first question connects, about 10 ms, longer if it
+    /// does not answer), so it is done on the first call after each open,
+    /// not by the open itself; call it where waiting is fine.
     #[must_use]
     pub fn device_id(&self) -> &DeviceId {
         self.session.device_id()
@@ -776,8 +778,9 @@ pub fn output_device_names() -> Result<Vec<String>, OpenError> {
 /// streams, and ALSA's `null` device. A device that cannot give its id or
 /// name just now (it is going away) is left out too.
 ///
-/// On PipeWire, the default is found through its PulseAudio server; without
-/// one, no device is marked the default.
+/// On PipeWire, the default is found through its PulseAudio server, over
+/// one connection the process keeps (and makes again after it fails);
+/// without that server, no device is marked the default.
 pub fn output_devices() -> Result<Vec<DeviceInfo>, OpenError> {
     stream::devices(plan::Direction::Output)
 }

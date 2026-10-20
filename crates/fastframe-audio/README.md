@@ -88,7 +88,12 @@ The listings leave out what is not a device of its own: cpal's PipeWire
 default devices (`Device::Default` stands for them) and other apps' playback
 streams, the monitors of outputs among the inputs, and ALSA's `null`
 device. On PipeWire the default is found through its PulseAudio server; a
-system without one marks no device the default. `output_device_names()`
+system without one marks no device the default. The process asks it over
+one connection it keeps, made the first time and made again after it fails,
+so a restarted server is reached: a connection for each listing cost a
+thread each, and pulseaudio-rs logged "Client disconnected" as an error each
+time one closed, about 23 times a minute for an app relisting every five
+seconds. `output_device_names()`
 still returns every name cpal lists, as before.
 
 ## rodio's mixer
@@ -322,7 +327,9 @@ through (`PipeWire`, `PulseAudio`, `ALSA`, `CoreAudio` or `WASAPI`), for the
 log. The process chooses it the first time it opens or lists a device and
 keeps that choice, so every stream and listing goes to the same system;
 each still gets a fresh connection to it, so new devices show up and a
-restarted sound server is reached again.
+restarted sound server is reached again. Only the lookup of PipeWire's
+default through its PulseAudio server keeps its connection (see
+[Devices](#devices)).
 
 ## Linux sound servers
 

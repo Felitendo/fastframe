@@ -541,19 +541,52 @@ fn listed(device: &cpal::Device) -> plan::Listed {
     }
 }
 
+/// The connection to PipeWire's PulseAudio server that [`server_default`]
+/// asks, one for the whole process (see [`Kept`](crate::kept::Kept)). cpal's
+/// PulseAudio host is its connection, a `pulseaudio::Client`, which may be
+/// shared between threads (checked below).
+#[cfg(target_os = "linux")]
+static PULSE: crate::kept::Kept<cpal::Host> = crate::kept::Kept::new();
+
+/// `PULSE` may be shared by the threads that list and open devices.
+#[cfg(target_os = "linux")]
+const _: () = {
+    const fn shared_between_threads<T: Send + Sync>() {}
+    shared_between_threads::<cpal::Host>();
+};
+
 /// The device behind cpal's PipeWire default devices, which name none:
 /// PipeWire's PulseAudio server's default sink or source. `None` without
 /// that server, or on other hosts, which open a device of their own.
 ///
-/// It connects to that server, which takes about 10 ms, and up to cpal's
-/// two seconds when the server does not answer, so it is only asked when an
-/// app wants the id, or opens the default input, whose channels cpal's
-/// PipeWire host does not know.
+/// It asks that server over one connection the process keeps, made the
+/// first time (about 10 ms, and up to cpal's two seconds when the server
+/// does not answer) and made again after it fails, so a restarted server is
+/// reached. It is asked only when an app lists the devices or wants the
+/// id, or opens the default input, whose channels cpal's PipeWire host does
+/// not know, always on the thread that lists or opens, never in a callback.
 fn server_default(host: &str, direction: Direction) -> Option<cpal::Device> {
     #[cfg(target_os = "linux")]
     if host == "pipewire" && cpal::available_hosts().contains(&cpal::HostId::PulseAudio) {
-        let pulse = cpal::host_from_id(cpal::HostId::PulseAudio).ok()?;
-        return default_device(&pulse, direction);
+        return PULSE
+            .ask(
+                || {
+                    cpal::host_from_id(cpal::HostId::PulseAudio)
+                        .map_err(|error| log::debug!("audio: no PulseAudio server: {error}"))
+                        .ok()
+                },
+                |pulse| match default_device(pulse, direction) {
+                    Some(device) => Ok(Some(device)),
+                    // cpal says `None` both for a server without that
+                    // default and for a broken connection; listing tells
+                    // them apart.
+                    None => pulse
+                        .devices()
+                        .map(|_| None)
+                        .map_err(|_| crate::kept::Broken),
+                },
+            )
+            .flatten();
     }
     let _ = (host, direction);
     None
