@@ -134,7 +134,9 @@ steps apply alongside the account-wide section below.
 - Release only when the maintainer asks, and batch the work since the last
   release as the section below says.
 - Write the notes in `packaging/release-notes/vX.Y.Z.md`, bump the workspace
-  version and `Cargo.lock`, and commit both as "Release fastframe X.Y.Z".
+  version and `Cargo.lock`, and the `tag = "vX.Y.Z"` examples in `README.md`
+  and `docs/_guide/getting-started.md`, so they always name the newest
+  release, and commit them together as "Release fastframe X.Y.Z".
 - Tag that commit with an annotated `vX.Y.Z` tag and push `main` and the tag.
 - Publish the release from the committed notes in the same step:
   `gh release create vX.Y.Z --verify-tag --title "fastframe X.Y.Z"
