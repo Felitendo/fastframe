@@ -318,9 +318,16 @@ the stream's proplist gets `application.name`, `application.icon_name`,
 `media.name` and `media.role` (in PulseAudio's words: `phone` for
 `Communication`). ALSA, CoreAudio and WASAPI have no place for them.
 
-They need a cpal that can name streams, which is waiting to be released;
-with the cpal this crate builds against today they are not applied yet, and
-the log says so once at debug level.
+No cpal release can name streams yet, so this crate gets cpal from
+`crmne/cpal` at `fcd8b6e` (cpal 0.18.2 with
+[RustAudio/cpal#1409](https://github.com/RustAudio/cpal/pull/1409)) until
+one does. An app that also gets cpal 0.18 from crates.io (through kira, for
+example) patches it to the same rev, so it builds one cpal:
+
+```toml
+[patch.crates-io]
+cpal = { git = "https://github.com/crmne/cpal", rev = "fcd8b6ebee9d822426fa8d6839cdd89af6e0d491" }
+```
 
 ## Keeping it working
 

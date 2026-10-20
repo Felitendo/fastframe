@@ -8,6 +8,7 @@ use std::time::Duration;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 
+use crate::naming::Naming;
 use crate::plan::{self, Choice, Direction};
 use crate::{Buffer, Capture, Clock, Device, DeviceId, DeviceInfo, OpenError, OutputError, Render};
 
@@ -47,33 +48,100 @@ macro_rules! by_format {
 /// stream and listing of the process on the same system.
 static HOST: OnceLock<cpal::HostId> = OnceLock::new();
 
-/// A fresh host of the audio system this process uses: the default host the
-/// first time, the same system afterwards. When that system cannot be
-/// reached just now (a sound server restarting), the default host of the
-/// moment, without changing the choice, so the next call tries it again.
+/// A fresh host of the audio system this process uses, naming the app as
+/// [`set_app_info`](crate::set_app_info) asked, for listing devices.
 pub(crate) fn host() -> cpal::Host {
+    host_naming(&Naming::resolve(crate::naming::app_info(), None, None))
+}
+
+/// A fresh host of the audio system this process uses, whose streams get
+/// `naming`: the default host the first time, the same system afterwards.
+/// When that system cannot be reached just now (a sound server
+/// restarting), the default host of the moment, without changing the
+/// choice, so the next call tries it again.
+pub(crate) fn host_naming(naming: &Naming) -> cpal::Host {
     if let Some(&id) = HOST.get() {
-        match cpal::host_from_id(id) {
+        match named_host(id, naming) {
             Ok(host) => return host,
             Err(error) => {
                 log::debug!("audio: {} is not available just now: {error}", id.name());
             }
         }
     }
-    let host = cpal::default_host();
+    let host = default_named_host(naming);
     let _ = HOST.set(host.id());
     host
 }
 
-/// Says once, in the log, that the stream's naming is not applied: the cpal
-/// release fastframe builds against has no way to name a stream. The cpal
-/// change that adds it is waiting to be released.
-fn not_named_yet(naming: &crate::naming::Naming) {
-    static SAID: std::sync::Once = std::sync::Once::new();
+/// cpal's default host, named. On Linux it tries the sound servers in
+/// `cpal::default_host`'s order, making each one named, so the process never
+/// opens an unnamed connection (one that would linger in the mixer as
+/// `cpal-pulseaudio-<pid>`) just to choose.
+fn default_named_host(naming: &Naming) -> cpal::Host {
+    #[cfg(target_os = "linux")]
     if !naming.is_empty() {
-        SAID.call_once(|| {
-            log::debug!("audio: this cpal cannot name streams, so {naming:?} is not applied");
+        let available = cpal::available_hosts();
+        for id in [cpal::HostId::PipeWire, cpal::HostId::PulseAudio] {
+            if available.contains(&id)
+                && let Ok(host) = named_host(id, naming)
+            {
+                return host;
+            }
+        }
+    }
+    let _ = naming;
+    cpal::default_host()
+}
+
+/// A host of `id` that names the app and the streams built from it, on
+/// PipeWire and PulseAudio; any other host as it is, since it has no place
+/// for names.
+fn named_host(id: cpal::HostId, naming: &Naming) -> Result<cpal::Host, cpal::Error> {
+    #[cfg(target_os = "linux")]
+    {
+        let app = naming.app.as_ref().map(|app| cpal::ApplicationInfo {
+            name: crate::naming::clean(&app.name),
+            icon_name: app.icon.as_deref().map(crate::naming::clean),
         });
+        let metadata = cpal::StreamMetadata {
+            name: naming.media_name.as_deref().map(crate::naming::clean),
+            role: naming.role.map(cpal_role),
+        };
+        match id {
+            cpal::HostId::PipeWire => {
+                let mut host = match app {
+                    Some(app) => cpal::platform::PipeWireHost::with_application(app)?,
+                    None => cpal::platform::PipeWireHost::new()?,
+                };
+                host.set_stream_metadata(metadata)?;
+                return Ok(host.into());
+            }
+            cpal::HostId::PulseAudio => {
+                let mut host = match app {
+                    Some(app) => cpal::platform::PulseAudioHost::with_application(app)?,
+                    None => cpal::platform::PulseAudioHost::new()?,
+                };
+                host.set_stream_metadata(metadata)?;
+                return Ok(host.into());
+            }
+            _ => {}
+        }
+    }
+    let _ = naming;
+    cpal::host_from_id(id)
+}
+
+/// cpal's role for a stream's.
+#[cfg(target_os = "linux")]
+fn cpal_role(role: crate::StreamRole) -> cpal::StreamRole {
+    match role {
+        crate::StreamRole::Music => cpal::StreamRole::Music,
+        crate::StreamRole::Movie => cpal::StreamRole::Movie,
+        crate::StreamRole::Game => cpal::StreamRole::Game,
+        crate::StreamRole::Communication => cpal::StreamRole::Communication,
+        crate::StreamRole::Notification => cpal::StreamRole::Notification,
+        crate::StreamRole::Production => cpal::StreamRole::Production,
+        crate::StreamRole::Accessibility => cpal::StreamRole::Accessibility,
     }
 }
 
@@ -332,8 +400,7 @@ pub(crate) fn open<E: Engine>(
 ) -> Result<Live, OpenError> {
     let direction = E::DIRECTION;
     let label = direction.label();
-    let host = host();
-    not_named_yet(&options.naming());
+    let host = host_naming(&options.naming());
     let (device, default_at_open) = pick(&host, &options.device, direction)?;
     let name = device_name(&device).map_err(OpenError::from)?;
     let own_id = own_id(&device);
@@ -599,7 +666,8 @@ fn server_default(host: &str, direction: Direction) -> Option<cpal::Device> {
         return PULSE
             .ask(
                 || {
-                    cpal::host_from_id(cpal::HostId::PulseAudio)
+                    let naming = Naming::resolve(crate::naming::app_info(), None, None);
+                    named_host(cpal::HostId::PulseAudio, &naming)
                         .map_err(|error| log::debug!("audio: no PulseAudio server: {error}"))
                         .ok()
                 },

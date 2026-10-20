@@ -1128,6 +1128,36 @@ portable, so nothing moves for installed copies or on Linux and macOS.
 
 Spotifast is the first app on it.
 
+## fastframe-audio 0.14
+
+0.14 names the app and its streams in the system's volume mixer
+(`set_app_info`, and `media_name` and `role` on `OutputOptions` and
+`InputOptions`; see the crate README). Two changes in each app:
+
+- **Pin cpal to the same fork.** fastframe-audio now gets cpal from
+  `crmne/cpal` at `fcd8b6ebee9d822426fa8d6839cdd89af6e0d491` (cpal 0.18.2 with
+  [RustAudio/cpal#1409](https://github.com/RustAudio/cpal/pull/1409)),
+  until a cpal release includes it. An app that also gets cpal 0.18 from
+  crates.io, through kira or directly, adds at its root:
+
+  ```toml
+  [patch.crates-io]
+  cpal = { git = "https://github.com/crmne/cpal", rev = "fcd8b6ebee9d822426fa8d6839cdd89af6e0d491" }
+  ```
+
+  Without it the app builds two cpal crates, its own and fastframe's.
+- **Struct literals get the new fields.** An `OutputOptions` or
+  `InputOptions` literal without `..Default::default()` adds
+  `media_name: None, role: None`.
+
+Then, to be named: call `fastframe_audio::set_app_info` once at startup,
+before opening or listing devices, with the app's name and its freedesktop
+icon name. ZapFast's call streams set `role: Some(StreamRole::Communication)`
+and Solco's `Some(StreamRole::Production)` if it wants one; without a role
+each app keeps its own remembered volume. A media name is fixed while the
+stream is open, so Spotifast leaves it at the app's name rather than the
+song title.
+
 ## fastframe-audio 0.12
 
 Output with the app's renderer, and since 0.12 input into the app's

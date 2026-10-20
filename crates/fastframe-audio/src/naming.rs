@@ -91,9 +91,22 @@ impl Naming {
     }
 
     /// Whether anything is named, so a host has something to apply.
+    #[cfg_attr(
+        not(any(target_os = "linux", test)),
+        expect(dead_code, reason = "names only Linux streams")
+    )]
     pub(crate) fn is_empty(&self) -> bool {
         self.app.is_none() && self.media_name.is_none() && self.role.is_none()
     }
+}
+
+/// `value` without NUL bytes, which the sound servers cannot take.
+#[cfg_attr(
+    not(any(target_os = "linux", test)),
+    expect(dead_code, reason = "names only Linux streams")
+)]
+pub(crate) fn clean(value: &str) -> String {
+    value.replace('\0', "")
 }
 
 #[cfg(test)]
@@ -105,6 +118,11 @@ mod tests {
             name: "Spotifast".into(),
             icon: Some("spotifast".into()),
         }
+    }
+
+    #[test]
+    fn nul_bytes_are_dropped() {
+        assert_eq!(clean("Spoti\0fast"), "Spotifast");
     }
 
     #[test]

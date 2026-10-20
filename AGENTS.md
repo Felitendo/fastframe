@@ -33,6 +33,17 @@ specific instruction in this repository says otherwise.
   patch in. Cargo only honours `[patch]` at an app's root, so fork pins cannot
   live here; a future `forks.toml` with a generator and CI check will manage
   them. Do not add it until asked.
+- One approved exception: `fastframe-audio` depends on cpal from the
+  maintainer's fork, `cpal = { git = "https://github.com/crmne/cpal", rev =
+  "fcd8b6ebee9d822426fa8d6839cdd89af6e0d491" }` (cpal 0.18.2 with
+  [RustAudio/cpal#1409](https://github.com/RustAudio/cpal/pull/1409), which
+  names apps and streams in volume mixers). It is carried until a cpal
+  release includes #1409 or its successor, then goes back to crates.io. Apps
+  that also get cpal 0.18 from crates.io (for example through kira) must add
+  `[patch.crates-io] cpal = { git = "https://github.com/crmne/cpal", rev =
+  "fcd8b6ebee9d822426fa8d6839cdd89af6e0d491" }` at their root, so they build one cpal. Change this rev only with
+  the maintainer's approval, and in the same commit as every place that
+  names it.
 - Prefer dependencies already in the apps' trees, at the versions they use.
   Justify each new dependency in a `Cargo.toml` comment.
 - After the extraction lands, moving each app onto the crate is a separate
