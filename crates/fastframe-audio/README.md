@@ -273,11 +273,54 @@ it from a thread pool shared with other work.
   `AtomicBool` the owner swaps before each `maintain()`), which calls
   `resume()`. `idle()` must say `true` only when nothing sounds until the
   app queues more: a paused output never renders by itself.
+- `media_name` and `role`: the stream's name and what it carries, in the
+  system's volume mixer (see below). `InputOptions` has them too.
 
 The output opens at the preferred rate, then at the device's own, each with
 the fixed buffer when one was asked for, then with the driver's buffer, then
 in any configuration the device lists. Every cpal sample format is filled
 from the renderer's `f32`.
+
+## Names in the volume mixer
+
+Volume mixers (`pavucontrol`, GNOME's and KDE's sound settings) list each
+stream with its app's name and icon and the stream's own name. cpal's
+defaults show the process name and `cpal-playback-<pid>` on PipeWire, and
+`cpal-pulseaudio-<pid>` on PulseAudio. Name the app once, at startup,
+before opening or listing anything:
+
+```rust
+fastframe_audio::set_app_info(fastframe_audio::AppInfo {
+    name: "ZapFast".into(),
+    icon: Some("zapfast".into()), // the freedesktop icon name
+})
+.ok();
+
+let call = InputOptions {
+    media_name: Some("Voice call".into()),
+    role: Some(fastframe_audio::StreamRole::Communication),
+    ..InputOptions::default()
+};
+```
+
+A stream without a `media_name` takes the app's name. The role tells the
+sound server what the stream carries: WirePlumber can lower other streams
+during a `Communication` stream, and remembers the volume of a stream with a
+role by its role, shared by every app with that role, where a stream
+without one has its volume remembered for its app. The names are given when
+a stream opens and stay until it reopens; cpal cannot rename an open
+stream, so a player cannot show the song playing as the stream's name.
+
+On PipeWire they become the stream's `application.name`,
+`application.icon-name`, `media.name` and `media.role`, and the app's name
+and icon its client's. On PulseAudio the app's name names the client, and
+the stream's proplist gets `application.name`, `application.icon_name`,
+`media.name` and `media.role` (in PulseAudio's words: `phone` for
+`Communication`). ALSA, CoreAudio and WASAPI have no place for them.
+
+They need a cpal that can name streams, which is waiting to be released;
+with the cpal this crate builds against today they are not applied yet, and
+the log says so once at debug level.
 
 ## Keeping it working
 

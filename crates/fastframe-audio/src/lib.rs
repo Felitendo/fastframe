@@ -63,6 +63,7 @@ mod kept;
 mod mixer;
 #[cfg(target_os = "windows")]
 mod mmcss;
+mod naming;
 mod plan;
 #[cfg(target_os = "linux")]
 mod realtime;
@@ -76,6 +77,7 @@ pub use clock::Clock;
 pub use feeder::raise_feeder_priority;
 #[cfg(feature = "rodio")]
 pub use mixer::{MixerRender, MixerSlot, NewMixer};
+pub use naming::{AppInfo, StreamRole, set_app_info};
 
 use session::Session;
 use stream::{Capturing, Rendering, Settings};
@@ -271,6 +273,16 @@ pub struct OutputOptions {
     /// let go) when it is paused. See [`Output`] for handles on other
     /// threads.
     pub pause_when_idle: Option<Duration>,
+    /// The stream's name in the system's volume mixer, such as `"Voice
+    /// call"`. `None`, the default, takes the app's name from
+    /// [`set_app_info`] (and, without that, the system's own). It is given
+    /// when the stream opens and stays until it reopens: cpal cannot rename
+    /// an open stream, so it is no place for a song title that changes.
+    pub media_name: Option<String>,
+    /// What the stream carries, which the sound server uses to route it and
+    /// to lower other streams (for example during a call). `None`, the
+    /// default, gives none.
+    pub role: Option<StreamRole>,
 }
 
 impl Default for OutputOptions {
@@ -284,6 +296,8 @@ impl Default for OutputOptions {
             follow_default: true,
             release_after: Some(Duration::from_secs(5 * 60)),
             pause_when_idle: None,
+            media_name: None,
+            role: None,
         }
     }
 }
@@ -299,6 +313,8 @@ impl OutputOptions {
             follow_default: self.follow_default,
             release_after: self.release_after,
             pause_when_idle: self.pause_when_idle,
+            media_name: self.media_name.clone(),
+            role: self.role,
         }
     }
 }
@@ -325,6 +341,16 @@ pub struct InputOptions {
     /// changes (checked every two seconds on macOS and Windows; PipeWire and
     /// PulseAudio move the stream themselves).
     pub follow_default: bool,
+    /// The stream's name in the system's volume mixer, such as `"Voice
+    /// call"`. `None`, the default, takes the app's name from
+    /// [`set_app_info`] (and, without that, the system's own). It is given
+    /// when the stream opens and stays until it reopens: cpal cannot rename
+    /// an open stream, so it is no place for a song title that changes.
+    pub media_name: Option<String>,
+    /// What the stream carries, which the sound server uses to route it and
+    /// to lower other streams (for example during a call). `None`, the
+    /// default, gives none.
+    pub role: Option<StreamRole>,
 }
 
 impl Default for InputOptions {
@@ -335,6 +361,8 @@ impl Default for InputOptions {
             sample_rate: None,
             buffer: Buffer::Driver,
             follow_default: true,
+            media_name: None,
+            role: None,
         }
     }
 }
@@ -350,6 +378,8 @@ impl InputOptions {
             follow_default: self.follow_default,
             release_after: None,
             pause_when_idle: None,
+            media_name: self.media_name.clone(),
+            role: self.role,
         }
     }
 }

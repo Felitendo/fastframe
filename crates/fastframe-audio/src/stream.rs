@@ -65,6 +65,18 @@ pub(crate) fn host() -> cpal::Host {
     host
 }
 
+/// Says once, in the log, that the stream's naming is not applied: the cpal
+/// release fastframe builds against has no way to name a stream. The cpal
+/// change that adds it is waiting to be released.
+fn not_named_yet(naming: &crate::naming::Naming) {
+    static SAID: std::sync::Once = std::sync::Once::new();
+    if !naming.is_empty() {
+        SAID.call_once(|| {
+            log::debug!("audio: this cpal cannot name streams, so {naming:?} is not applied");
+        });
+    }
+}
+
 /// The name of the audio system this process uses, choosing it if it has not
 /// yet.
 pub(crate) fn host_name() -> &'static str {
@@ -218,6 +230,21 @@ pub(crate) struct Settings {
     pub(crate) follow_default: bool,
     pub(crate) release_after: Option<std::time::Duration>,
     pub(crate) pause_when_idle: Option<std::time::Duration>,
+    /// The stream's name in the volume mixer, `None` for the app's.
+    pub(crate) media_name: Option<String>,
+    /// What the stream carries.
+    pub(crate) role: Option<crate::StreamRole>,
+}
+
+impl Settings {
+    /// What the stream is called and carries, with the app's info.
+    pub(crate) fn naming(&self) -> crate::naming::Naming {
+        crate::naming::Naming::resolve(
+            crate::naming::app_info(),
+            self.media_name.as_deref(),
+            self.role,
+        )
+    }
 }
 
 /// What a stream's callback drives: the app's renderer for an output, its
@@ -306,6 +333,7 @@ pub(crate) fn open<E: Engine>(
     let direction = E::DIRECTION;
     let label = direction.label();
     let host = host();
+    not_named_yet(&options.naming());
     let (device, default_at_open) = pick(&host, &options.device, direction)?;
     let name = device_name(&device).map_err(OpenError::from)?;
     let own_id = own_id(&device);
