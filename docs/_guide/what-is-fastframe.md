@@ -20,7 +20,7 @@ things: text that renders like the rest of the desktop, fonts for every script,
 icons, colour themes, translations, a log file for bug reports, a tray item, a
 way to keep running with the window closed, and a way to update themselves.
 
-[Chat with Work Desktop](https://github.com/crmne/chatwithwork-local-agent),
+[Chat with Work Desktop](https://github.com/crmne/chatwithwork-desktop),
 the desktop app for [Chat with Work](https://chatwithwork.com), was one of
 them too, and fastframe was partly extracted from its egui app. It is now a
 Tauri app whose window is the Chat with Work web app, and it still uses
