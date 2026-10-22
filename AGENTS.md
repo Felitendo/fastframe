@@ -1,8 +1,10 @@
 # fastframe agent guide
 
 fastframe ("egui on rails") is the shared foundation of Carmine Paolino's
-native egui apps: ZapFast, Spotifast, Solco, TonePush, and the Chat with
-Work local agent. It is a Cargo workspace of small `fastframe-*` crates. These
+native egui apps: ZapFast, Spotifast, Solco and TonePush. It was also
+extracted from Chat with Work Desktop's egui app; Chat with Work Desktop is
+now a Tauri app and uses only fastframe's audio, notifications and
+start-at-login crates. It is a Cargo workspace of small `fastframe-*` crates. These
 notes are for coding agents and new contributors. They apply unless a more
 specific instruction in this repository says otherwise.
 

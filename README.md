@@ -22,7 +22,7 @@ No telemetry or hosted service is required by the crates.
 Extracted from [ZapFast](https://zapfast.rocks),
 [Spotifast](https://spotifast.rocks), [Solco](https://getsolco.com),
 [TonePush](https://docs.tonepush.rocks), and
-[Chat with Work](https://chatwithwork.com).
+[Chat with Work Desktop](https://github.com/crmne/chatwithwork-local-agent).
 
 ## See it
 
